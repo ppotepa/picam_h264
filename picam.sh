@@ -38,9 +38,27 @@ Examples:
 USAGE
 }
 
+declare -A DEPENDENCY_PACKAGES=(
+  [libcamera-vid]="libcamera-apps"
+  [ffmpeg]="ffmpeg"
+  [awk]="gawk"
+  [ps]="procps"
+  [stdbuf]="coreutils"
+  [whiptail]="whiptail"
+)
+
 ensure_dependency() {
   local dependency="$1"
-  command -v "$dependency" >/dev/null 2>&1 || die "Required dependency '$dependency' was not found."
+  if command -v "$dependency" >/dev/null 2>&1; then
+    return
+  fi
+
+  local package_hint="${DEPENDENCY_PACKAGES[$dependency]:-}"
+  if [[ -n "$package_hint" ]]; then
+    die "Required dependency '$dependency' was not found. Install the '${package_hint}' package (e.g. run '${SCRIPT_DIR}/dep.sh' or 'sudo apt-get install ${package_hint}')."
+  else
+    die "Required dependency '$dependency' was not found."
+  fi
 }
 
 check_dependencies() {
