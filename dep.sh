@@ -7,23 +7,45 @@ set -euo pipefail
 
 print_usage() {
   cat <<'USAGE'
-Usage: ./dep.sh [--check]
+Usage: ./dep.sh [options]
 
 Checks for the commands required by picam.sh and optionally installs the
-missing ones via apt-get. Run without arguments as root (or with sudo) to
-perform installation, or use --check to only report the status.
+missing ones via apt-get.
+
+Options:
+  --check              Only verify availability (do not install).
+  --require-whiptail   Treat whiptail as a required dependency.
+  -h, --help           Show this help message and exit.
+
+Run without --check as root (or with sudo) to install missing dependencies.
 USAGE
 }
 
-if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
-  print_usage
-  exit 0
-fi
-
 CHECK_ONLY=0
-if [[ ${1:-} == "--check" ]]; then
-  CHECK_ONLY=1
-fi
+REQUIRE_WHIPTAIL=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check)
+      CHECK_ONLY=1
+      shift
+      ;;
+    --require-whiptail)
+      REQUIRE_WHIPTAIL=1
+      shift
+      ;;
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo >&2
+      print_usage >&2
+      exit 1
+      ;;
+  esac
+done
 
 have_command() {
   command -v "$1" >/dev/null 2>&1
@@ -68,6 +90,11 @@ declare -A required_cmds=(
 declare -A optional_cmds=(
   [whiptail]="whiptail"
 )
+
+if (( REQUIRE_WHIPTAIL )); then
+  required_cmds[whiptail]="${optional_cmds[whiptail]}"
+  unset 'optional_cmds[whiptail]'
+fi
 
 echo "Checking required commands..."
 required_missing=0
