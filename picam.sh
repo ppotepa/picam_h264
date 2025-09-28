@@ -60,6 +60,7 @@ run_dependency_helper() {
   local dep_script="${SCRIPT_DIR}/dep.sh"
   local dep_check_args=("--check")
   local dep_install_args=()
+  local need_recheck=0
 
   if [[ "${NEEDS_WHIPTAIL:-0}" -eq 1 ]]; then
     dep_check_args+=("--require-whiptail")
@@ -70,31 +71,35 @@ run_dependency_helper() {
     die "Dependency helper not found or not executable at '$dep_script'"
   fi
 
-  if "$dep_script" "${dep_check_args[@]}"; then
-    return
-  fi
+  if ! "$dep_script" "${dep_check_args[@]}"; then
+    need_recheck=1
 
-  echo "Missing dependencies detected."
+    echo "Missing dependencies detected."
 
-  if [[ $EUID -eq 0 ]]; then
-    echo "Attempting to install required packages..."
-    if ! "$dep_script" "${dep_install_args[@]}"; then
-      die "Automatic dependency installation failed."
-    fi
-  else
-    if command -v sudo >/dev/null 2>&1; then
-      echo "Requesting sudo privileges to install required packages..."
-      if ! sudo "$dep_script" "${dep_install_args[@]}"; then
-        die "Automatic dependency installation via sudo failed."
+    if [[ $EUID -eq 0 ]]; then
+      echo "Attempting to install required packages..."
+      if ! "$dep_script" "${dep_install_args[@]}"; then
+        die "Automatic dependency installation failed."
       fi
     else
-      die "Dependency check failed and sudo is unavailable. Run '${dep_script}' as root to install requirements."
+      if command -v sudo >/dev/null 2>&1; then
+        echo "Requesting sudo privileges to install required packages..."
+        if ! sudo "$dep_script" "${dep_install_args[@]}"; then
+          die "Automatic dependency installation via sudo failed."
+        fi
+      else
+        die "Dependency check failed and sudo is unavailable. Run '${dep_script}' as root to install requirements."
+      fi
     fi
   fi
 
-  if ! "$dep_script" "${dep_check_args[@]}"; then
-    die "Dependencies are still missing after attempting installation."
+  if (( need_recheck )); then
+    if ! "$dep_script" "${dep_check_args[@]}"; then
+      die "Dependencies are still missing after attempting installation."
+    fi
   fi
+
+  hash -r 2>/dev/null || true
 }
 
 parse_resolution() {
