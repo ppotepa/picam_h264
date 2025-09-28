@@ -9,8 +9,6 @@ DEFAULT_BITRATE="4000000"
 DEFAULT_CORNER="top-left"
 
 SCRIPT_NAME=$(basename "$0")
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-
 die() {
   local msg="$1"
   echo "${SCRIPT_NAME}: ${msg}" >&2
@@ -29,6 +27,7 @@ Options:
   -c, --corner <position>     Overlay corner: top-left, top-right, bottom-left, bottom-right (default: ${DEFAULT_CORNER})
       --no-menu               Skip the interactive whiptail wizard
       --menu                  Force showing the wizard even if arguments are provided
+      --check-deps            Only verify dependencies and exit
   -h, --help                  Show this help message and exit
 
 Examples:
@@ -47,77 +46,186 @@ declare -A DEPENDENCY_PACKAGES=(
   [whiptail]="whiptail"
 )
 
-ensure_dependency() {
-  local dependency="$1"
-  if command -v "$dependency" >/dev/null 2>&1; then
-    return
-  fi
+REQUIRED_COMMANDS=(
+  libcamera-vid
+  ffmpeg
+  awk
+  ps
+  stdbuf
+)
 
-  local package_hint="${DEPENDENCY_PACKAGES[$dependency]:-}"
-  if [[ -n "$package_hint" ]]; then
-    die "Required dependency '$dependency' was not found. Install the '${package_hint}' package (e.g. run '${SCRIPT_DIR}/dep.sh' or 'sudo apt-get install ${package_hint}')."
-  else
-    die "Required dependency '$dependency' was not found."
-  fi
-}
+OPTIONAL_COMMANDS=(
+  whiptail
+)
 
-check_dependencies() {
-  ensure_dependency libcamera-vid
-  ensure_dependency ffmpeg
-  ensure_dependency awk
-  ensure_dependency ps
-  ensure_dependency stdbuf
-
-  local need_whiptail="${NEEDS_WHIPTAIL:-0}"
-  if [[ "$need_whiptail" -eq 1 ]]; then
-    ensure_dependency whiptail
+build_required_commands() {
+  local require_whiptail="$1"
+  local -n _result="$2"
+  _result=("${REQUIRED_COMMANDS[@]}")
+  if [[ "$require_whiptail" -eq 1 ]]; then
+    _result+=("whiptail")
   fi
 }
 
-run_dependency_helper() {
-  local dep_script="${SCRIPT_DIR}/dep.sh"
-  local dep_check_args=("--check")
-  local dep_install_args=()
-  local need_recheck=0
+build_optional_commands() {
+  local require_whiptail="$1"
+  local -n _result="$2"
+  _result=()
+  for cmd in "${OPTIONAL_COMMANDS[@]}"; do
+    if [[ "$require_whiptail" -eq 1 && "$cmd" == "whiptail" ]]; then
+      continue
+    fi
+    _result+=("$cmd")
+  done
+}
 
-  if [[ "${NEEDS_WHIPTAIL:-0}" -eq 1 ]]; then
-    dep_check_args+=("--require-whiptail")
-    dep_install_args+=("--require-whiptail")
-  fi
+print_dependency_status() {
+  local require_whiptail="$1"
+  local required=()
+  local optional=()
+  build_required_commands "$require_whiptail" required
+  build_optional_commands "$require_whiptail" optional
 
-  if [[ ! -x "$dep_script" ]]; then
-    die "Dependency helper not found or not executable at '$dep_script'"
-  fi
+  local missing=0
 
-  if ! "$dep_script" "${dep_check_args[@]}"; then
-    need_recheck=1
-
-    echo "Missing dependencies detected."
-
-    if [[ $EUID -eq 0 ]]; then
-      echo "Attempting to install required packages..."
-      if ! "$dep_script" "${dep_install_args[@]}"; then
-        die "Automatic dependency installation failed."
-      fi
+  echo "Checking required commands..."
+  for cmd in "${required[@]}"; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      echo "[OK] $cmd"
     else
-      if command -v sudo >/dev/null 2>&1; then
-        echo "Requesting sudo privileges to install required packages..."
-        if ! sudo "$dep_script" "${dep_install_args[@]}"; then
-          die "Automatic dependency installation via sudo failed."
-        fi
+      missing=1
+      local pkg="${DEPENDENCY_PACKAGES[$cmd]:-}"
+      if [[ -n "$pkg" ]]; then
+        echo "[MISSING] $cmd (install package: $pkg)"
       else
-        die "Dependency check failed and sudo is unavailable. Run '${dep_script}' as root to install requirements."
+        echo "[MISSING] $cmd"
       fi
     fi
+  done
+
+  if [[ ${#optional[@]} -gt 0 ]]; then
+    echo
+    echo "Checking optional commands (recommended)..."
+    for cmd in "${optional[@]}"; do
+      if command -v "$cmd" >/dev/null 2>&1; then
+        echo "[OK] $cmd"
+      else
+        local pkg="${DEPENDENCY_PACKAGES[$cmd]:-}"
+        if [[ -n "$pkg" ]]; then
+          echo "[OPTIONAL MISSING] $cmd (install package: $pkg)"
+        else
+          echo "[OPTIONAL MISSING] $cmd"
+        fi
+      fi
+    done
   fi
 
-  if (( need_recheck )); then
-    if ! "$dep_script" "${dep_check_args[@]}"; then
-      die "Dependencies are still missing after attempting installation."
+  echo
+  if [[ "$missing" -eq 0 ]]; then
+    echo "All required commands are available."
+  else
+    echo "Required commands are missing."
+  fi
+
+  return "$missing"
+}
+
+install_packages() {
+  local -a packages=()
+  declare -A seen=()
+  for pkg in "$@"; do
+    [[ -z "$pkg" ]] && continue
+    if [[ -z "${seen[$pkg]+x}" ]]; then
+      packages+=("$pkg")
+      seen[$pkg]=1
+    fi
+  done
+
+  [[ ${#packages[@]} -gt 0 ]] || return 0
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    die "apt-get is not available. Install the following packages manually: ${packages[*]}"
+  fi
+
+  local -a prefix=()
+  if [[ $EUID -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      prefix=(sudo)
+    else
+      die "Missing required dependencies and sudo is unavailable. Install packages manually: ${packages[*]}"
     fi
   fi
 
-  hash -r 2>/dev/null || true
+  echo "Installing packages: ${packages[*]}"
+  "${prefix[@]}" apt-get update
+  "${prefix[@]}" apt-get install -y "${packages[@]}"
+}
+
+ensure_dependencies() {
+  local require_whiptail="$1"
+  local required=()
+  build_required_commands "$require_whiptail" required
+
+  local missing_commands=()
+  local installable_packages=()
+  local manual_commands=()
+
+  for cmd in "${required[@]}"; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      continue
+    fi
+    missing_commands+=("$cmd")
+    local pkg="${DEPENDENCY_PACKAGES[$cmd]:-}"
+    if [[ -n "$pkg" ]]; then
+      installable_packages+=("$pkg")
+    else
+      manual_commands+=("$cmd")
+    fi
+  done
+
+  if [[ ${#manual_commands[@]} -gt 0 ]]; then
+    die "Missing required dependencies: ${manual_commands[*]}. Install the appropriate packages manually and re-run the script."
+  fi
+
+  if [[ ${#missing_commands[@]} -gt 0 ]]; then
+    echo "Missing required commands: ${missing_commands[*]}"
+    install_packages "${installable_packages[@]}"
+    hash -r 2>/dev/null || true
+  fi
+
+  local verify_missing=()
+  for cmd in "${required[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      verify_missing+=("$cmd")
+    fi
+  done
+
+  if [[ ${#verify_missing[@]} -gt 0 ]]; then
+    local suggest_packages=()
+    for cmd in "${verify_missing[@]}"; do
+      local pkg="${DEPENDENCY_PACKAGES[$cmd]:-}"
+      [[ -n "$pkg" ]] && suggest_packages+=("$pkg")
+    done
+    if [[ ${#suggest_packages[@]} -gt 0 ]]; then
+      die "Dependencies are still missing after installation: ${verify_missing[*]}. Install packages manually: ${suggest_packages[*]}"
+    else
+      die "Dependencies are still missing after installation: ${verify_missing[*]}"
+    fi
+  fi
+
+  local optional=()
+  build_optional_commands "$require_whiptail" optional
+  for cmd in "${optional[@]}"; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      continue
+    fi
+    local pkg="${DEPENDENCY_PACKAGES[$cmd]:-}"
+    if [[ -n "$pkg" ]]; then
+      echo "Optional dependency '$cmd' not found. Install the '${pkg}' package to enable related features."
+    else
+      echo "Optional dependency '$cmd' not found."
+    fi
+  done
 }
 
 parse_resolution() {
@@ -131,7 +239,7 @@ parse_resolution() {
 
 parse_arguments() {
   local parsed
-  parsed=$(getopt -o m:r:f:b:c:h --long method:,resolution:,fps:,bitrate:,corner:,help,menu,no-menu -- "$@") || {
+  parsed=$(getopt -o m:r:f:b:c:h --long method:,resolution:,fps:,bitrate:,corner:,help,menu,no-menu,check-deps -- "$@") || {
     usage
     exit 1
   }
@@ -165,6 +273,10 @@ parse_arguments() {
         ;;
       --no-menu)
         SKIP_MENU=1
+        shift
+        ;;
+      --check-deps)
+        CHECK_DEPS_ONLY=1
         shift
         ;;
       -h|--help)
@@ -438,32 +550,36 @@ main() {
   OVERLAY_CORNER="$DEFAULT_CORNER"
   SKIP_MENU=0
   FORCE_MENU=0
-  NEEDS_WHIPTAIL=0
+  CHECK_DEPS_ONLY=0
 
   local original_argc=$#
   local show_menu=0
+  local require_whiptail=0
 
   parse_arguments "$@"
 
   if [[ "$SKIP_MENU" -eq 0 ]]; then
     if [[ "$FORCE_MENU" -eq 1 || ( "$original_argc" -eq 0 && -t 0 && -t 1 ) ]]; then
-      NEEDS_WHIPTAIL=1
       show_menu=1
+      require_whiptail=1
     fi
   fi
 
-  run_dependency_helper
+  if (( CHECK_DEPS_ONLY )); then
+    if print_dependency_status "$require_whiptail"; then
+      exit 0
+    else
+      exit 1
+    fi
+  fi
 
-  check_dependencies
+  ensure_dependencies "$require_whiptail"
 
   if [[ "$show_menu" -eq 1 ]]; then
     show_whiptail_wizard
   fi
 
   validate_configuration
-
-  NEEDS_WHIPTAIL=0
-  check_dependencies
   start_capture
 }
 

@@ -10,7 +10,7 @@ Skrypt `picam.sh` udostępnia interaktywne menu (whiptail) oraz argumenty wiersz
   dostarcza polecenie `libcamera-vid` wymagane przez pipeline H.264.
 - `whiptail` (wymagany tylko, gdy korzystasz z kreatora).
 
-Uruchom `./dep.sh`, aby automatycznie sprawdzić i (jeśli uruchomisz go jako root) doinstalować powyższe zależności. Dodaj `--check`, jeżeli chcesz jedynie zweryfikować stan środowiska. Opcja `--require-whiptail` pozwala potraktować kreator jako obowiązkowy element (np. gdy chcesz upewnić się, że zostanie zainstalowany na serwerze bez środowiska graficznego). Główny skrypt wywołuje `dep.sh --check` przy starcie i w razie braków podejmie próbę instalacji (z użyciem `sudo`, jeśli jest dostępne) zanim wyświetli menu whiptail.
+`picam.sh` automatycznie sprawdza obecność powyższych poleceń i, jeśli to możliwe, doinstaluje brakujące pakiety (`apt-get` z użyciem `sudo`, gdy nie uruchamiasz skryptu jako root). Aby wykonać samą weryfikację środowiska bez uruchamiania benchmarku, użyj `./picam.sh --check-deps`. Dodaj `--menu`, aby w trybie sprawdzania potraktować `whiptail` jako zależność obowiązkową.
 
 ## Użycie
 
