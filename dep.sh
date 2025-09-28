@@ -71,7 +71,7 @@ ensure_command_or_package() {
 
   missing_packages["$pkg"]=1
   missing_commands+=("$cmd")
-  return 0
+  return 1
 }
 
 declare -A missing_packages=()
