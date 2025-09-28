@@ -59,6 +59,8 @@ ensure_command_or_package() {
     return 0
   fi
 
+  missing_commands+=("$cmd")
+
   if (( CHECK_ONLY )); then
     echo "[MISSING] $cmd (install package: $pkg)"
     return 1
@@ -66,16 +68,19 @@ ensure_command_or_package() {
 
   if [[ $EUID -ne 0 ]]; then
     echo "[NEEDS INSTALL] $cmd (run: sudo apt-get install -y $pkg)"
+    missing_privileged_commands+=("$cmd")
+    missing_not_installed=1
     return 1
   fi
 
   missing_packages["$pkg"]=1
-  missing_commands+=("$cmd")
   return 1
 }
 
 declare -A missing_packages=()
 missing_commands=()
+missing_privileged_commands=()
+missing_not_installed=0
 
 # Required dependencies (command -> package)
 declare -A required_cmds=(
@@ -132,6 +137,14 @@ if (( CHECK_ONLY )); then
   echo
   echo "Check completed."
   exit 0
+fi
+
+if (( missing_not_installed )); then
+  echo
+  echo "Missing required commands could not be installed automatically:" >&2
+  printf '  - %s\n' "${missing_privileged_commands[@]}" >&2
+  echo "Re-run this script as root or with sudo to install them." >&2
+  exit 1
 fi
 
 if [[ ${#missing_packages[@]} -eq 0 ]]; then
