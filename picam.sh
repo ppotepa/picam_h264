@@ -9,7 +9,7 @@ DEFAULT_BITRATE="4000000"
 DEFAULT_CORNER="top-left"
 
 SCRIPT_NAME=$(basename "$0")
-
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 die() {
   local msg="$1"
   echo "${SCRIPT_NAME}: ${msg}" >&2
@@ -28,6 +28,7 @@ Options:
   -c, --corner <position>     Overlay corner: top-left, top-right, bottom-left, bottom-right (default: ${DEFAULT_CORNER})
       --no-menu               Skip the interactive whiptail wizard
       --menu                  Force showing the wizard even if arguments are provided
+      --check-deps            Only verify dependencies and exit
   -h, --help                  Show this help message and exit
 
 Examples:
@@ -37,17 +38,44 @@ Examples:
 USAGE
 }
 
-ensure_dependency() {
-  local dependency="$1"
-  command -v "$dependency" >/dev/null 2>&1 || die "Required dependency '$dependency' was not found."
+REQUIRED_COMMANDS=(
+  libcamera-vid
+  ffmpeg
+  awk
+  ps
+  stdbuf
+)
+
+build_dependency_command() {
+  local require_whiptail="$1"
+  local mode="$2"
+  local -n _out="$3"
+  local dep_script="${SCRIPT_DIR}/dep.sh"
+
+  if [[ ! -x "$dep_script" ]]; then
+    die "Dependency helper not found or not executable at '$dep_script'"
+  fi
+
+  _out=("$dep_script")
+  if [[ "$mode" == "check" ]]; then
+    _out+=(--check)
+  fi
+  if [[ "$require_whiptail" -eq 1 ]]; then
+    _out+=(--require-whiptail)
+  fi
 }
 
 check_dependencies() {
-  ensure_dependency libcamera-vid
-  ensure_dependency ffmpeg
-  ensure_dependency awk
-  ensure_dependency ps
-  ensure_dependency stdbuf
+  local missing=()
+  for cmd in "${REQUIRED_COMMANDS[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    die "Required dependency '${missing[0]}' was not found."
+  fi
 }
 
 parse_resolution() {
@@ -61,7 +89,7 @@ parse_resolution() {
 
 parse_arguments() {
   local parsed
-  parsed=$(getopt -o m:r:f:b:c:h --long method:,resolution:,fps:,bitrate:,corner:,help,menu,no-menu -- "$@") || {
+  parsed=$(getopt -o m:r:f:b:c:h --long method:,resolution:,fps:,bitrate:,corner:,help,menu,no-menu,check-deps -- "$@") || {
     usage
     exit 1
   }
@@ -97,6 +125,10 @@ parse_arguments() {
         SKIP_MENU=1
         shift
         ;;
+      --check-deps)
+        CHECK_DEPS_ONLY=1
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -112,9 +144,32 @@ parse_arguments() {
   done
 }
 
-show_whiptail_wizard() {
-  command -v whiptail >/dev/null 2>&1 || die "whiptail is required for the interactive wizard. Install the 'whiptail' package."
+validate_numeric() {
+  local value="$1"
+  local label="$2"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    die "Invalid ${label}: '${value}'. Provide a positive integer."
+  fi
+}
 
+validate_corner() {
+  case "$1" in
+    top-left|top-right|bottom-left|bottom-right)
+      ;;
+    *)
+      die "Invalid overlay corner '${1}'. Use one of: top-left, top-right, bottom-left, bottom-right."
+      ;;
+  esac
+}
+
+validate_configuration() {
+  parse_resolution "$RESOLUTION"
+  validate_numeric "$FPS" "FPS"
+  validate_numeric "$BITRATE" "bitrate"
+  validate_corner "$OVERLAY_CORNER"
+}
+
+show_whiptail_wizard() {
   local menu_choice
   menu_choice=$(whiptail --title "PiCam Benchmark" --menu "Select capture method" 20 78 10 \
     "h264_sdl_preview" "libcamera-vid -> H264 -> ffmpeg SDL preview" \
@@ -218,9 +273,11 @@ monitor_metrics() {
   bitrate_value=$(awk -v b="$bitrate_target" 'BEGIN{printf "%.1f Mbps", b / 1000000}')
 
   while any_pid_alive "${pids[@]}"; do
+    [[ -f "$stats_file" ]] || break
+
     if [[ -s "$ffmpeg_log" ]]; then
       local latest_line
-      latest_line=$(tail -n 1 "$ffmpeg_log")
+      latest_line=$(tail -n 5 "$ffmpeg_log" | tr '\r' '\n' | tail -n 1)
       if [[ $latest_line =~ fps=([0-9.]+) ]]; then
         fps_value="${BASH_REMATCH[1]}"
       fi
@@ -274,10 +331,25 @@ run_h264_sdl_preview() {
   local ffmpeg_log
   ffmpeg_log=$(mktemp /tmp/picam_ffmpeg.XXXXXX)
 
+  local ffmpeg_pid=""
+  local camera_pid=""
+  local monitor_pid=""
+
+  stop_process() {
+    local pid="$1"
+    [[ -n "$pid" ]] || return
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  }
+
   cleanup_pipeline() {
+    stop_process "$monitor_pid"
+    stop_process "$camera_pid"
+    stop_process "$ffmpeg_pid"
     rm -f "$video_fifo" "$stats_file" "$ffmpeg_log"
   }
-  trap cleanup_pipeline RETURN
+
+  trap cleanup_pipeline EXIT INT TERM
 
   local drawtext
   if [[ -n "$font_path" ]]; then
@@ -291,19 +363,22 @@ run_h264_sdl_preview() {
     -f h264 -i "$video_fifo" \
     -vf "$drawtext" -an -f sdl "PiCam Preview" \
     2> >(stdbuf -oL tee "$ffmpeg_log") &
-  local ffmpeg_pid=$!
+  ffmpeg_pid=$!
 
   stdbuf -oL libcamera-vid --inline --codec h264 -t 0 \
     --width "$width" --height "$height" --framerate "$fps" \
     --bitrate "$bitrate" -o "$video_fifo" &
-  local camera_pid=$!
+  camera_pid=$!
 
   monitor_metrics "$stats_file" "$ffmpeg_log" "$width" "$height" "$bitrate" "$fps" "$camera_pid" "$ffmpeg_pid" &
-  local monitor_pid=$!
+  monitor_pid=$!
 
-  wait "$camera_pid" || true
-  wait "$ffmpeg_pid" || true
-  kill "$monitor_pid" >/dev/null 2>&1 || true
+  wait "$camera_pid" 2>/dev/null || true
+  wait "$ffmpeg_pid" 2>/dev/null || true
+  wait "$monitor_pid" 2>/dev/null || true
+
+  trap - EXIT INT TERM
+  cleanup_pipeline
 }
 
 start_capture() {
@@ -325,17 +400,68 @@ main() {
   OVERLAY_CORNER="$DEFAULT_CORNER"
   SKIP_MENU=0
   FORCE_MENU=0
+  CHECK_DEPS_ONLY=0
 
   local original_argc=$#
+  local show_menu=0
+  local require_whiptail=0
 
   parse_arguments "$@"
 
   if [[ "$SKIP_MENU" -eq 0 ]]; then
     if [[ "$FORCE_MENU" -eq 1 || ( "$original_argc" -eq 0 && -t 0 && -t 1 ) ]]; then
-      show_whiptail_wizard
+      show_menu=1
+      require_whiptail=1
     fi
   fi
 
+  if (( CHECK_DEPS_ONLY )); then
+    local dep_check_cmd=()
+    build_dependency_command "$require_whiptail" "check" dep_check_cmd
+    if "${dep_check_cmd[@]}"; then
+      exit 0
+    else
+      exit 1
+    fi
+  fi
+
+  local dep_check_cmd=()
+  build_dependency_command "$require_whiptail" "check" dep_check_cmd
+
+  if ! "${dep_check_cmd[@]}"; then
+    echo "Missing dependencies detected."
+    if [[ $EUID -eq 0 ]]; then
+      local dep_install_cmd=()
+      build_dependency_command "$require_whiptail" "install" dep_install_cmd
+      if ! "${dep_install_cmd[@]}"; then
+        die "Automatic dependency installation failed."
+      fi
+    else
+      if command -v sudo >/dev/null 2>&1; then
+        echo "Requesting sudo privileges to install required packages..."
+        local dep_install_cmd=()
+        build_dependency_command "$require_whiptail" "install" dep_install_cmd
+        if ! sudo "${dep_install_cmd[@]}"; then
+          die "Automatic dependency installation via sudo failed."
+        fi
+      else
+        die "Dependency check failed and sudo is unavailable. Run '${SCRIPT_DIR}/dep.sh' as root to install requirements."
+      fi
+    fi
+
+    hash -r 2>/dev/null || true
+
+    build_dependency_command "$require_whiptail" "check" dep_check_cmd
+    if ! "${dep_check_cmd[@]}"; then
+      die "Dependencies are still missing after attempting installation."
+    fi
+  fi
+
+  if [[ "$show_menu" -eq 1 ]]; then
+    show_whiptail_wizard
+  fi
+
+  validate_configuration
   check_dependencies
   start_capture
 }

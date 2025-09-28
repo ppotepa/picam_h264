@@ -5,8 +5,22 @@ Skrypt `picam.sh` udostępnia interaktywne menu (whiptail) oraz argumenty wiersz
 ## Wymagania
 
 - Raspberry Pi OS (Bullseye lub nowszy) z aktywnym stosom libcamera.
-- Zainstalowane pakiety: `libcamera-apps`, `ffmpeg`, `whiptail`, `coreutils` (dla `stdbuf`), `awk` i `ps` (z pakietu `procps`).
 - Podłączona i skonfigurowana kamera CSI.
+- Zainstalowane pakiety: `libcamera-apps`, `ffmpeg`, `coreutils` (dla `stdbuf`), `awk` i `ps` (z pakietu `procps`). Pakiet `libcamera-apps`
+  dostarcza polecenie `libcamera-vid` wymagane przez pipeline H.264.
+- `whiptail` (wymagany tylko, gdy korzystasz z kreatora).
+
+`picam.sh` automatycznie sprawdza obecność powyższych poleceń i, jeśli to możliwe, doinstaluje brakujące pakiety (`apt-get` z użyciem `sudo`, gdy nie uruchamiasz skryptu jako root). Do ręcznej obsługi zależności możesz wykorzystać pomocniczy skrypt `dep.sh`:
+
+```bash
+# samo sprawdzenie
+./dep.sh --check
+
+# instalacja braków (wymaga roota lub sudo)
+sudo ./dep.sh
+```
+
+Aby wykonać weryfikację środowiska bez uruchamiania benchmarku, użyj również `./picam.sh --check-deps`. Dodaj `--menu`, aby w trybie sprawdzania potraktować `whiptail` jako zależność obowiązkową.
 
 ## Użycie
 
@@ -31,6 +45,8 @@ Każda opcja dostępna w kreatorze może zostać ustawiona z linii poleceń:
 ```
 
 Przełącznik `--no-menu` pomija kreator. Aby wymusić jego pokazanie mimo podania argumentów, użyj `--menu`.
+
+Skrypt waliduje wartości FPS, bitrate oraz rozdzielczości i zakończy działanie z komunikatem błędu, jeśli parametry są niepoprawne. Po zatrzymaniu przechwytywania (również sygnałem `Ctrl+C`) tymczasowe pliki FIFO i procesy zostaną uporządkowane automatycznie.
 
 ### Zakończenie
 
