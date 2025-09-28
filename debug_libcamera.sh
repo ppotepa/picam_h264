@@ -37,8 +37,57 @@ dpkg -l | grep libcamera
 
 echo -e "\n=== Testing the camera command ==="
 if command -v "$CAMERA_CMD" >/dev/null 2>&1; then
-    echo "SUCCESS: $CAMERA_CMD is available and should work"
-    $CAMERA_CMD --help 2>&1 | head -5
+    echo "SUCCESS: $CAMERA_CMD is available"
+    $CAMERA_CMD --list-cameras 2>&1 | head -10
 else
     echo "FAILED: $CAMERA_CMD is not available"
+fi
+
+echo -e "\n=== Camera Detection Test ==="
+detect_cameras() {
+  local csi_available=0
+  local usb_available=0
+  local usb_device=""
+  
+  # Check for CSI camera using libcamera
+  if command -v "$CAMERA_CMD" >/dev/null 2>&1; then
+    if $CAMERA_CMD --list-cameras 2>/dev/null | grep -q "Available cameras"; then
+      csi_available=1
+    fi
+  fi
+  
+  # Check for USB cameras
+  if ls /dev/video* >/dev/null 2>&1; then
+    for device in /dev/video*; do
+      if command -v v4l2-ctl >/dev/null 2>&1; then
+        if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
+          usb_available=1
+          usb_device="$device"
+          break
+        fi
+      fi
+    done
+  fi
+  
+  echo "CSI Camera Available: $csi_available"
+  echo "USB Camera Available: $usb_available"
+  echo "USB Device: $usb_device"
+}
+
+detect_cameras
+
+echo -e "\n=== USB Camera Details ==="
+if ls /dev/video* >/dev/null 2>&1; then
+    echo "Video devices found:"
+    ls -la /dev/video*
+    if command -v v4l2-ctl >/dev/null 2>&1; then
+        for device in /dev/video*; do
+            echo -e "\n--- $device ---"
+            v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | head -20
+        done
+    else
+        echo "v4l2-ctl not available - install v4l-utils package"
+    fi
+else
+    echo "No video devices found"
 fi

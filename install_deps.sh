@@ -15,7 +15,7 @@ sudo apt-get install -y libcamera-apps
 
 # Install other required packages
 echo "Installing other required packages..."
-sudo apt-get install -y ffmpeg gawk procps coreutils whiptail
+sudo apt-get install -y ffmpeg gawk procps coreutils whiptail v4l-utils
 
 echo "All dependencies installed successfully!"
 echo "You can now run ./picam.sh"

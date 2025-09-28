@@ -46,6 +46,10 @@ REQUIRED_COMMANDS=(
   stdbuf
 )
 
+OPTIONAL_COMMANDS=(
+  v4l2-ctl
+)
+
 # Get the correct camera command (libcamera-vid or rpicam-vid)
 get_camera_command() {
   if command -v libcamera-vid >/dev/null 2>&1; then
@@ -54,6 +58,48 @@ get_camera_command() {
     echo "rpicam-vid"
   else
     echo "libcamera-vid"  # fallback for error messages
+  fi
+}
+
+# Detect available cameras
+detect_cameras() {
+  local csi_available=0
+  local usb_available=0
+  local usb_device=""
+  
+  # Check for CSI camera using libcamera
+  if command -v "$(get_camera_command)" >/dev/null 2>&1; then
+    if "$(get_camera_command)" --list-cameras 2>/dev/null | grep -q "Available cameras"; then
+      csi_available=1
+    fi
+  fi
+  
+  # Check for USB cameras
+  if ls /dev/video* >/dev/null 2>&1; then
+    for device in /dev/video*; do
+      if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
+        usb_available=1
+        usb_device="$device"
+        break
+      fi
+    done
+  fi
+  
+  echo "csi_available=$csi_available usb_available=$usb_available usb_device=$usb_device"
+}
+
+# Get the best available camera type
+get_camera_type() {
+  local detection
+  detection=$(detect_cameras)
+  eval "$detection"
+  
+  if [[ "$csi_available" -eq 1 ]]; then
+    echo "csi"
+  elif [[ "$usb_available" -eq 1 ]]; then
+    echo "usb"
+  else
+    echo "none"
   fi
 }
 
@@ -392,10 +438,101 @@ run_h264_sdl_preview() {
   cleanup_pipeline
 }
 
+run_usb_h264_sdl_preview() {
+  local width height
+  parse_resolution "$RESOLUTION"
+  width="$WIDTH"
+  height="$HEIGHT"
+
+  local detection usb_device
+  detection=$(detect_cameras)
+  eval "$detection"
+  
+  if [[ "$usb_available" -ne 1 ]]; then
+    die "No USB camera found"
+  fi
+
+  local video_fifo stats_file ffmpeg_log font_path overlay_x overlay_y
+  video_fifo=$(mktemp -u --suffix=.h264)
+  stats_file=$(mktemp --suffix=.txt)
+  ffmpeg_log=$(mktemp --suffix=.log)
+
+  mkfifo "$video_fifo"
+
+  find_font_path font_path
+  compute_overlay_position "$OVERLAY_CORNER" "$width" "$height" overlay_x overlay_y
+
+  local camera_pid ffmpeg_pid monitor_pid
+
+  stop_process() {
+    local pid="$1"
+    [[ -n "$pid" ]] || return
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  }
+
+  cleanup_pipeline() {
+    stop_process "$monitor_pid"
+    stop_process "$camera_pid"
+    stop_process "$ffmpeg_pid"
+    rm -f "$video_fifo" "$stats_file" "$ffmpeg_log"
+  }
+
+  trap cleanup_pipeline EXIT INT TERM
+
+  local drawtext
+  if [[ -n "$font_path" ]]; then
+    drawtext="drawtext=fontfile=$(escape_path_for_drawtext "$font_path"):textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
+  else
+    drawtext="drawtext=textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
+  fi
+
+  stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
+    -fflags nobuffer -flags low_delay -framedrop \
+    -f h264 -i "$video_fifo" \
+    -vf "$drawtext" -an -f sdl "USB Camera Preview" \
+    2> >(stdbuf -oL tee "$ffmpeg_log") &
+  ffmpeg_pid=$!
+
+  # Use ffmpeg to capture from USB camera and encode to H.264
+  stdbuf -oL ffmpeg -hide_banner -loglevel error \
+    -f v4l2 -input_format mjpeg -video_size "${width}x${height}" -framerate "$FPS" \
+    -i "$usb_device" \
+    -c:v libx264 -preset ultrafast -tune zerolatency \
+    -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize $((BITRATE * 2)) \
+    -f h264 "$video_fifo" &
+  camera_pid=$!
+
+  monitor_metrics "$stats_file" "$ffmpeg_log" "$width" "$height" "$BITRATE" "$FPS" "$camera_pid" "$ffmpeg_pid" &
+  monitor_pid=$!
+
+  wait "$camera_pid" 2>/dev/null || true
+  wait "$ffmpeg_pid" 2>/dev/null || true
+  wait "$monitor_pid" 2>/dev/null || true
+
+  trap - EXIT INT TERM
+  cleanup_pipeline
+}
+
 start_capture() {
+  local camera_type
+  camera_type=$(get_camera_type)
+  
   case "$METHOD" in
     h264_sdl_preview)
-      run_h264_sdl_preview
+      case "$camera_type" in
+        csi)
+          echo "Using CSI camera module..."
+          run_h264_sdl_preview
+          ;;
+        usb)
+          echo "Using USB camera..."
+          run_usb_h264_sdl_preview
+          ;;
+        none)
+          die "No supported camera found. Please connect a CSI camera module or USB camera."
+          ;;
+      esac
       ;;
     *)
       die "Unsupported method '$METHOD'"

@@ -49,6 +49,7 @@ REQUIRED_COMMANDS=(
 
 OPTIONAL_COMMANDS=(
   whiptail
+  v4l2-ctl
 )
 
 declare -A COMMAND_PACKAGES=(
@@ -59,6 +60,7 @@ declare -A COMMAND_PACKAGES=(
   [ps]="procps"
   [stdbuf]="coreutils"
   [whiptail]="whiptail"
+  [v4l2-ctl]="v4l-utils"
 )
 
 # Check if either libcamera-vid or rpicam-vid is available
