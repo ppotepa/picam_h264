@@ -462,7 +462,6 @@ main() {
   fi
 
   validate_configuration
-  check_dependencies
   start_capture
 }
 
