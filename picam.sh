@@ -46,6 +46,17 @@ REQUIRED_COMMANDS=(
   stdbuf
 )
 
+# Get the correct camera command (libcamera-vid or rpicam-vid)
+get_camera_command() {
+  if command -v libcamera-vid >/dev/null 2>&1; then
+    echo "libcamera-vid"
+  elif command -v rpicam-vid >/dev/null 2>&1; then
+    echo "rpicam-vid"
+  else
+    echo "libcamera-vid"  # fallback for error messages
+  fi
+}
+
 build_dependency_command() {
   local require_whiptail="$1"
   local mode="$2"
@@ -172,7 +183,7 @@ validate_configuration() {
 show_whiptail_wizard() {
   local menu_choice
   menu_choice=$(whiptail --title "PiCam Benchmark" --menu "Select capture method" 20 78 10 \
-    "h264_sdl_preview" "libcamera-vid -> H264 -> ffmpeg SDL preview" \
+    "h264_sdl_preview" "Camera -> H264 -> ffmpeg SDL preview" \
     3>&1 1>&2 2>&3) || exit 1
   METHOD="$menu_choice"
 
@@ -365,7 +376,7 @@ run_h264_sdl_preview() {
     2> >(stdbuf -oL tee "$ffmpeg_log") &
   ffmpeg_pid=$!
 
-  stdbuf -oL libcamera-vid --inline --codec h264 -t 0 \
+  stdbuf -oL "$(get_camera_command)" --inline --codec h264 -t 0 \
     --width "$width" --height "$height" --framerate "$fps" \
     --bitrate "$bitrate" -o "$video_fifo" &
   camera_pid=$!

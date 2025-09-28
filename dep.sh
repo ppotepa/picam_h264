@@ -53,12 +53,24 @@ OPTIONAL_COMMANDS=(
 
 declare -A COMMAND_PACKAGES=(
   [libcamera-vid]="libcamera-apps"
+  [rpicam-vid]="libcamera-apps"
   [ffmpeg]="ffmpeg"
   [awk]="gawk"
   [ps]="procps"
   [stdbuf]="coreutils"
   [whiptail]="whiptail"
 )
+
+# Check if either libcamera-vid or rpicam-vid is available
+check_camera_command() {
+  if command -v libcamera-vid >/dev/null 2>&1; then
+    return 0
+  elif command -v rpicam-vid >/dev/null 2>&1; then
+    return 0
+  else
+    return 1
+  fi
+}
 
 build_required_list() {
   local -n _out="$1"
@@ -114,7 +126,23 @@ check_commands() {
 
   echo "Checking required commands..."
   for cmd in "${_required[@]}"; do
-    if command -v "$cmd" >/dev/null 2>&1; then
+    if [[ "$cmd" == "libcamera-vid" ]]; then
+      if check_camera_command; then
+        if command -v libcamera-vid >/dev/null 2>&1; then
+          echo "[OK] libcamera-vid"
+        else
+          echo "[OK] rpicam-vid (replaces libcamera-vid)"
+        fi
+      else
+        local pkg="${COMMAND_PACKAGES[$cmd]:-}"
+        if [[ -n "$pkg" ]]; then
+          echo "[MISSING] libcamera-vid or rpicam-vid (install package: $pkg)"
+        else
+          echo "[MISSING] libcamera-vid or rpicam-vid"
+        fi
+        missing+=("$cmd")
+      fi
+    elif command -v "$cmd" >/dev/null 2>&1; then
       echo "[OK] $cmd"
     else
       local pkg="${COMMAND_PACKAGES[$cmd]:-}"
