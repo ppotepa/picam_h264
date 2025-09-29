@@ -54,6 +54,7 @@ Options:
   -s, --source <device>       Camera source: auto, csi, or /dev/videoN (default: auto)
   -e, --encode <method>       Encoding method: auto, software, hardware (default: auto)
       --no-menu               Skip the interactive whiptail wizard
+      --no-overlay            Skip performance overlay (for low-end CPUs)
       --menu                  Force showing the wizard even if arguments are provided
       --check-deps            Only verify dependencies (no installation) and exit
       --install-deps          Install missing dependencies and exit
@@ -192,63 +193,63 @@ get_camera_command() {
   fi
 }
 
+# Return 0 if $1 is a real USB capture node (uvcvideo + Video Capture)
+is_usb_capture_node() {
+  local dev="$1"
+  [[ -c "$dev" ]] || return 1
+  if command -v v4l2-ctl >/dev/null 2>&1; then
+    local info
+    info=$(v4l2-ctl --device="$dev" -D 2>/dev/null || true)
+    # Filter out bcm2835 codec/isp devices and require Video Capture capability
+    grep -qiE 'Driver name:\s*uvcvideo' <<<"$info" || return 1
+    grep -qi 'Capabilities:.*Video Capture' <<<"$info" || return 1
+    return 0
+  fi
+  # Fallback without v4l2-ctl: best-effort, skip bcm2835 nodes
+  udevadm info --query=all --name="$dev" 2>/dev/null | grep -qi 'uvc' && \
+  [[ "$dev" =~ /dev/video[0-9]+$ ]]
+}
+
+# Pick the first proper capture node (e.g., /dev/video0 for C920)
+select_usb_capture_device() {
+  local dev
+  for dev in /dev/video*; do
+    is_usb_capture_node "$dev" && { echo "$dev"; return 0; }
+  done
+  return 1
+}
+
 # Comprehensive camera detection function
 # Detects both CSI (ribbon cable) and USB cameras
 # Returns shell variables: csi_available, usb_available, usb_device
 detect_cameras() {
-  local csi_available=0    # 1 if CSI camera detected
-  local usb_available=0    # 1 if USB camera detected  
-  local usb_device=""       # Path to USB camera device
-  
-  # Check for CSI camera using libcamera - more robust detection
+  local csi_available=0
+  local usb_available=0
+  local usb_device=""
+
+  # CSI (avoid counting USB seen by libcamera)
   if command -v "$(get_camera_command)" >/dev/null 2>&1; then
     local camera_output
-    camera_output=$("$(get_camera_command)" --list-cameras 2>&1)
-    
-    # Check if there are actual CSI cameras (not just USB cameras detected by libcamera)
+    camera_output=$("$(get_camera_command)" --list-cameras 2>&1 || true)
     if echo "$camera_output" | grep -q "Available cameras" && \
        ! echo "$camera_output" | grep -q "ERROR.*no cameras available"; then
-      # Further check: ensure it's not just USB cameras being detected
+      # If libcamera lists anything *not* marked usb@, consider it real CSI
       if echo "$camera_output" | grep -qv "usb@"; then
         csi_available=1
       fi
     fi
   fi
-  
-  # Check for USB cameras using V4L2
+
+  # USB (uvcvideo + Video Capture)
   if ls /dev/video* >/dev/null 2>&1; then
-    for device in /dev/video*; do
-      # Check if device is accessible and supports common formats
-      if command -v v4l2-ctl >/dev/null 2>&1; then
-        local driver_info
-        driver_info=$(v4l2-ctl --device="$device" --all 2>/dev/null || true)
-        if [[ -z "$driver_info" ]]; then
-          continue
-        fi
-
-        if echo "$driver_info" | grep -qi "bcm2835\|codec\|isp"; then
-          continue
-        fi
-
-        if echo "$driver_info" | grep -qiE "Driver name:[[:space:]]*uvcvideo" && \
-           echo "$driver_info" | grep -qi "Capabilities:.*Video Capture"; then
-          if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
-            usb_available=1
-            usb_device="$device"
-            break
-          fi
-        fi
-      else
-        # Fallback: if v4l2-ctl not available, assume first video device is usable
-        if [[ -c "$device" ]]; then
-          usb_available=1
-          usb_device="$device"
-          break
-        fi
-      fi
-    done
+    local dev
+    dev=$(select_usb_capture_device || true)
+    if [[ -n "$dev" ]]; then
+      usb_available=1
+      usb_device="$dev"
+    fi
   fi
-  
+
   echo "csi_available=$csi_available usb_available=$usb_available usb_device=$usb_device"
 }
 
@@ -520,7 +521,7 @@ parse_resolution() {
 
 parse_arguments() {
   local parsed
-  parsed=$(getopt -o m:r:f:b:c:s:e:h --long method:,resolution:,fps:,bitrate:,corner:,source:,encode:,help,menu,no-menu,check-deps,install-deps,debug-cameras,test-usb,list-cameras -- "$@") || {
+  parsed=$(getopt -o m:r:f:b:c:s:e:h --long method:,resolution:,fps:,bitrate:,corner:,source:,encode:,help,menu,no-menu,no-overlay,check-deps,install-deps,debug-cameras,test-usb,list-cameras -- "$@") || {
     usage
     exit 1
   }
@@ -562,6 +563,10 @@ parse_arguments() {
         ;;
       --no-menu)
         SKIP_MENU=1
+        shift
+        ;;
+      --no-overlay)
+        NO_OVERLAY=1
         shift
         ;;
       --check-deps)
@@ -850,7 +855,7 @@ monitor_metrics() {
       if [[ $latest_line =~ fps=([0-9.]+) ]]; then
         fps_value="${BASH_REMATCH[1]}"
       fi
-      if [[ $latest_line =~ bitrate=([^ ]+) ]]; then
+      if [[ $latest_line =~ bitrate=([^ ]+) ]] && [[ ${BASH_REMATCH[1]} != "N/A" ]]; then
         bitrate_value="${BASH_REMATCH[1]}"
       fi
     fi
@@ -1167,18 +1172,28 @@ run_h264_sdl_preview() {
 
   trap cleanup_pipeline EXIT INT TERM
 
-  local drawtext
-  if [[ -n "$font_path" ]]; then
-    drawtext="drawtext=fontfile=$(escape_path_for_drawtext "$font_path"):textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
-  else
-    drawtext="drawtext=textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
+  local drawtext=""
+  if [[ "$NO_OVERLAY" -eq 0 ]]; then
+    if [[ -n "$font_path" ]]; then
+      drawtext="drawtext=fontfile=$(escape_path_for_drawtext "$font_path"):textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
+    else
+      drawtext="drawtext=textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
+    fi
   fi
 
-  stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
-    -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
-    -f h264 -i "$video_fifo" \
-    -vf "$drawtext" -an -f sdl "PiCam Preview" \
-    2> >(stdbuf -oL tee "$ffmpeg_log") &
+  if [[ -n "$drawtext" ]]; then
+    stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
+      -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
+      -f h264 -i "$video_fifo" \
+      -vf "$drawtext" -an -f sdl "PiCam Preview" \
+      2> >(stdbuf -oL tee "$ffmpeg_log") &
+  else
+    stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
+      -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
+      -f h264 -i "$video_fifo" \
+      -an -f sdl "PiCam Preview" \
+      2> >(stdbuf -oL tee "$ffmpeg_log") &
+  fi
   ffmpeg_pid=$!
 
   stdbuf -oL "$(get_camera_command)" --inline --codec h264 --timeout 0 \
@@ -1186,8 +1201,10 @@ run_h264_sdl_preview() {
     --bitrate "$bitrate" -o - > "$video_fifo" &
   camera_pid=$!
 
-  monitor_metrics "$stats_file" "$ffmpeg_log" "$width" "$height" "$bitrate" "$fps" "$camera_pid" "$ffmpeg_pid" &
-  monitor_pid=$!
+  if [[ "$NO_OVERLAY" -eq 0 ]]; then
+    monitor_metrics "$stats_file" "$ffmpeg_log" "$width" "$height" "$bitrate" "$fps" "$camera_pid" "$ffmpeg_pid" &
+    monitor_pid=$!
+  fi
 
   wait "$camera_pid" 2>/dev/null || true
   wait "$ffmpeg_pid" 2>/dev/null || true
@@ -1253,18 +1270,28 @@ run_usb_h264_sdl_preview() {
 
   trap cleanup_pipeline EXIT INT TERM
 
-  local drawtext
-  if [[ -n "$font_path" ]]; then
-    drawtext="drawtext=fontfile=$(escape_path_for_drawtext "$font_path"):textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
-  else
-    drawtext="drawtext=textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
+  local drawtext=""
+  if [[ "$NO_OVERLAY" -eq 0 ]]; then
+    if [[ -n "$font_path" ]]; then
+      drawtext="drawtext=fontfile=$(escape_path_for_drawtext "$font_path"):textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
+    else
+      drawtext="drawtext=textfile=$(escape_path_for_drawtext "$stats_file"):reload=1:x=${overlay_x}:y=${overlay_y}:fontcolor=white:fontsize=28:box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6"
+    fi
   fi
 
-  stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
-    -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
-    -f h264 -i "$video_fifo" \
-    -vf "$drawtext" -an -f sdl "USB Camera Preview" \
-    2> >(stdbuf -oL tee "$ffmpeg_log") &
+  if [[ -n "$drawtext" ]]; then
+    stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
+      -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
+      -f h264 -i "$video_fifo" \
+      -vf "$drawtext" -an -f sdl "USB Camera Preview" \
+      2> >(stdbuf -oL tee "$ffmpeg_log") &
+  else
+    stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
+      -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
+      -f h264 -i "$video_fifo" \
+      -an -f sdl "USB Camera Preview" \
+      2> >(stdbuf -oL tee "$ffmpeg_log") &
+  fi
   ffmpeg_pid=$!
 
   # Use ffmpeg to capture from USB camera and encode to H.264
@@ -1313,12 +1340,16 @@ run_usb_h264_sdl_preview() {
     camera_pid=$!
   fi
 
-  monitor_metrics "$stats_file" "$ffmpeg_log" "$width" "$height" "$BITRATE" "$FPS" "$camera_pid" "$ffmpeg_pid" &
-  monitor_pid=$!
+  if [[ "$NO_OVERLAY" -eq 0 ]]; then
+    monitor_metrics "$stats_file" "$ffmpeg_log" "$width" "$height" "$BITRATE" "$FPS" "$camera_pid" "$ffmpeg_pid" &
+    monitor_pid=$!
+  fi
 
   wait "$camera_pid" 2>/dev/null || true
   wait "$ffmpeg_pid" 2>/dev/null || true
-  wait "$monitor_pid" 2>/dev/null || true
+  if [[ "$NO_OVERLAY" -eq 0 ]]; then
+    wait "$monitor_pid" 2>/dev/null || true
+  fi
 
   trap - EXIT INT TERM
   cleanup_pipeline
@@ -1371,6 +1402,7 @@ main() {
   ENCODE="$DEFAULT_ENCODE"           # Encoding method
   SKIP_MENU=0                       # Skip interactive menu flag
   FORCE_MENU=0                      # Force menu display flag
+  NO_OVERLAY=0                      # Skip overlay flag
   CHECK_DEPS_ONLY=0                 # Only check dependencies flag
   INSTALL_DEPS_ONLY=0               # Only install dependencies flag
   DEBUG_CAMERAS_ONLY=0              # Only show camera debug info flag
@@ -1439,16 +1471,6 @@ main() {
   start_capture
 }
 
-# =============================================================================
-# SCRIPT EXECUTION
-# =============================================================================
-
-# Execute main function with all command line arguments
-# =============================================================================
-# SCRIPT EXECUTION
-# =============================================================================
-
-# Execute main function with all command line arguments
 # =============================================================================
 # SCRIPT EXECUTION
 # =============================================================================
