@@ -31,7 +31,8 @@
 #include <unistd.h>
 
 // Logging system
-typedef enum {
+typedef enum
+{
     LOG_DEBUG = 0,
     LOG_INFO = 1,
     LOG_WARN = 2,
@@ -105,42 +106,51 @@ static noreturn void die(const char *fmt, ...)
     exit(1);
 }
 
-static const char *log_level_str(log_level_t level) {
-    switch (level) {
-        case LOG_DEBUG: return "DEBUG";
-        case LOG_INFO:  return "INFO ";
-        case LOG_WARN:  return "WARN ";
-        case LOG_ERROR: return "ERROR";
-        default:        return "UNKN ";
+static const char *log_level_str(log_level_t level)
+{
+    switch (level)
+    {
+    case LOG_DEBUG:
+        return "DEBUG";
+    case LOG_INFO:
+        return "INFO ";
+    case LOG_WARN:
+        return "WARN ";
+    case LOG_ERROR:
+        return "ERROR";
+    default:
+        return "UNKN ";
     }
 }
 
-static void log_msg(log_level_t level, const char *fmt, ...) {
-    if (level < g_log_level) return;
-    
+static void log_msg(log_level_t level, const char *fmt, ...)
+{
+    if (level < g_log_level)
+        return;
+
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     struct tm *tm = localtime(&ts.tv_sec);
-    
+
     char timestamp[32];
     snprintf(timestamp, sizeof(timestamp), "%02d:%02d:%02d.%03ld",
              tm->tm_hour, tm->tm_min, tm->tm_sec, ts.tv_nsec / 1000000);
-    
+
     FILE *out = g_log_file ? g_log_file : stderr;
     fprintf(out, "[%s] %s: ", timestamp, log_level_str(level));
-    
+
     va_list ap;
     va_start(ap, fmt);
     vfprintf(out, fmt, ap);
     va_end(ap);
-    
+
     fprintf(out, "\n");
     fflush(out);
 }
 
 #define LOG_DEBUG(...) log_msg(LOG_DEBUG, __VA_ARGS__)
-#define LOG_INFO(...)  log_msg(LOG_INFO, __VA_ARGS__)
-#define LOG_WARN(...)  log_msg(LOG_WARN, __VA_ARGS__)
+#define LOG_INFO(...) log_msg(LOG_INFO, __VA_ARGS__)
+#define LOG_WARN(...) log_msg(LOG_WARN, __VA_ARGS__)
 #define LOG_ERROR(...) log_msg(LOG_ERROR, __VA_ARGS__)
 
 static int command_exists(const char *cmd)
@@ -457,7 +467,8 @@ static child_t spawn_child(char *const argv[], int stdin_fd, int stdout_fd, int 
             die("pipe: %s", strerror(errno));
     }
     pid_t p = fork();
-    if (p < 0) {
+    if (p < 0)
+    {
         LOG_ERROR("fork() failed: %s", strerror(errno));
         die("fork: %s", strerror(errno));
     }
@@ -486,7 +497,8 @@ static child_t spawn_child(char *const argv[], int stdin_fd, int stdout_fd, int 
     }
     // parent
     LOG_DEBUG("Spawned process: %s (PID %d)", argv[0], p);
-    if (stdin_fd >= 0) {
+    if (stdin_fd >= 0)
+    {
         LOG_DEBUG("Process %d: redirected stdin from fd %d", p, stdin_fd);
         close(stdin_fd);
     }
@@ -866,7 +878,7 @@ static void parse_cfg(int argc, char **argv, cfg_t *cfg, int *list_only, int *no
     cfg->skip_menu = 1;
     cfg->duration = DEFAULT_DURATION;
     cfg->use_framebuffer = 0;
-    cfg->verbose = 1; // INFO level by default
+    cfg->verbose = 1;     // INFO level by default
     cfg->log_file[0] = 0; // stderr by default
     *list_only = 0;
     *no_overlay = 0;
@@ -1048,37 +1060,47 @@ int main(int argc, char **argv)
     cfg_t cfg;
     int list_only = 0, no_overlay = 0;
     parse_cfg(argc, argv, &cfg, &list_only, &no_overlay);
-    
+
     // Initialize logging
-    g_log_level = cfg.verbose == 0 ? LOG_ERROR : 
-                  cfg.verbose == 1 ? LOG_INFO :
-                  cfg.verbose == 2 ? LOG_DEBUG : LOG_DEBUG;
-    
-    if (cfg.log_file[0]) {
+    g_log_level = cfg.verbose == 0 ? LOG_ERROR : cfg.verbose == 1 ? LOG_INFO
+                                             : cfg.verbose == 2   ? LOG_DEBUG
+                                                                  : LOG_DEBUG;
+
+    if (cfg.log_file[0])
+    {
         g_log_file = fopen(cfg.log_file, "a");
-        if (!g_log_file) {
+        if (!g_log_file)
+        {
             fprintf(stderr, "Warning: Cannot open log file %s: %s\n", cfg.log_file, strerror(errno));
-        } else {
+        }
+        else
+        {
             LOG_INFO("Logging to file: %s", cfg.log_file);
         }
     }
-    
+
     LOG_INFO("picam_bench starting with config: %dx%d@%dfps, bitrate=%d, source=%s, encode=%s, duration=%ds",
              cfg.width, cfg.height, cfg.fps, cfg.bitrate,
-             cfg.source_mode == SRC_AUTO ? "auto" : cfg.source_mode == SRC_CSI ? "csi" : cfg.source_node,
-             cfg.encode_mode == ENC_AUTO ? "auto" : cfg.encode_mode == ENC_SOFTWARE ? "software" : "hardware",
+             cfg.source_mode == SRC_AUTO ? "auto" : cfg.source_mode == SRC_CSI ? "csi"
+                                                                               : cfg.source_node,
+             cfg.encode_mode == ENC_AUTO ? "auto" : cfg.encode_mode == ENC_SOFTWARE ? "software"
+                                                                                    : "hardware",
              cfg.duration);
 
-    if (!command_exists("ffmpeg")) {
+    if (!command_exists("ffmpeg"))
+    {
         LOG_ERROR("ffmpeg command not found in PATH");
         die("ffmpeg not found");
     }
     LOG_DEBUG("ffmpeg found in PATH");
-    
+
     int have_cam_cmd = camera_cmd() != NULL;
-    if (have_cam_cmd) {
+    if (have_cam_cmd)
+    {
         LOG_DEBUG("Camera command available: %s", camera_cmd());
-    } else {
+    }
+    else
+    {
         LOG_WARN("No camera command (rpicam-vid/libcamera-vid) found");
     }
 
@@ -1172,11 +1194,12 @@ int main(int argc, char **argv)
     // Start camera path
     if (use_csi)
     {
-        if (!have_cam_cmd) {
+        if (!have_cam_cmd)
+        {
             LOG_ERROR("CSI camera selected but no camera command available");
             die("rpicam-vid/libcamera-vid required for CSI");
         }
-        LOG_INFO("Starting CSI camera: %dx%d@%dfps, bitrate=%d, timeout=%dms", 
+        LOG_INFO("Starting CSI camera: %dx%d@%dfps, bitrate=%d, timeout=%dms",
                  cfg.width, cfg.height, cfg.fps, cfg.bitrate, cfg.duration * 1000);
         start_csi_camera(&ctx, &cfg);
     }
@@ -1207,12 +1230,14 @@ int main(int argc, char **argv)
     // Wait children
     LOG_INFO("Waiting for pipeline processes to complete...");
     int st1 = 0, st2 = 0;
-    if (ctx.cam_pid > 0) {
+    if (ctx.cam_pid > 0)
+    {
         LOG_DEBUG("Waiting for camera process (PID %d)", ctx.cam_pid);
         waitpid(ctx.cam_pid, &st1, 0);
         LOG_DEBUG("Camera process exited with status %d", WEXITSTATUS(st1));
     }
-    if (ctx.prev_pid > 0) {
+    if (ctx.prev_pid > 0)
+    {
         LOG_DEBUG("Waiting for preview process (PID %d)", ctx.prev_pid);
         waitpid(ctx.prev_pid, &st2, 0);
         LOG_DEBUG("Preview process exited with status %d", WEXITSTATUS(st2));
@@ -1231,8 +1256,9 @@ int main(int argc, char **argv)
     // cleanup
     LOG_DEBUG("Cleaning up temporary directory: %s", ctx.tmpdir);
     ensure_dir_remove(ctx.tmpdir);
-    
-    if (g_log_file) {
+
+    if (g_log_file)
+    {
         LOG_INFO("picam_bench completed");
         fclose(g_log_file);
     }
