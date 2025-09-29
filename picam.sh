@@ -1265,9 +1265,10 @@ run_h264_sdl_preview() {
     echo "Starting endless benchmark (Ctrl+C to stop)..."
   fi
 
+  # Start camera with verbose output, redirect video to FIFO
   stdbuf -oL "$(get_camera_command)" --inline --codec h264 --timeout "$timeout_ms" \
     --width "$width" --height "$height" --framerate "$fps" \
-    --bitrate "$bitrate" -o - > "$video_fifo" 2>&1 &
+    --bitrate "$bitrate" -o "$video_fifo" &
   camera_pid=$!
 
   if [[ "$NO_OVERLAY" -eq 0 ]]; then
@@ -1399,12 +1400,12 @@ run_usb_h264_sdl_preview() {
 
   if [[ "$encoding_method" == "hardware" ]]; then
     if [[ "$input_format" == "h264" ]]; then
-      stdbuf -oL ffmpeg -hide_banner -loglevel error \
+      stdbuf -oL ffmpeg -hide_banner -loglevel info -stats \
         "${ffmpeg_input_args[@]}" "${duration_args[@]}" \
         -c:v copy -f h264 "$video_fifo" 2>&1 &
       camera_pid=$!
     else
-      stdbuf -oL ffmpeg -hide_banner -loglevel error \
+      stdbuf -oL ffmpeg -hide_banner -loglevel info -stats \
         "${ffmpeg_input_args[@]}" "${duration_args[@]}" \
         -pix_fmt nv12 -c:v h264_v4l2m2m \
         -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize $((BITRATE * 2)) \
@@ -1412,7 +1413,7 @@ run_usb_h264_sdl_preview() {
       camera_pid=$!
     fi
   else
-    stdbuf -oL ffmpeg -hide_banner -loglevel error \
+    stdbuf -oL ffmpeg -hide_banner -loglevel info -stats \
       "${ffmpeg_input_args[@]}" "${duration_args[@]}" \
       -c:v libx264 -preset ultrafast -tune zerolatency \
       -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize $((BITRATE * 2)) \
