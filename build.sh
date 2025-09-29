@@ -106,6 +106,28 @@ compile() {
     echo ">>> Built: ${OUT}"
 }
 
+compile_menu() {
+    local MENU_SRC="${SCRIPT_DIR}/picam_menu.c"
+    local MENU_OUT="${SCRIPT_DIR}/picam_menu"
+    
+    if [[ -f "${MENU_SRC}" ]]; then
+        echo ">>> Building menu launcher: ${MENU_OUT}"
+        
+        local MENU_CFLAGS=(-O2 -Wall -Wextra)
+        
+        if [[ "${VERBOSE}" -eq 1 ]]; then
+            echo ">>> gcc ${MENU_CFLAGS[*]} -o \"${MENU_OUT}\" \"${MENU_SRC}\""
+        fi
+        
+        gcc "${MENU_CFLAGS[@]}" -o "${MENU_OUT}" "${MENU_SRC}"
+        strip -s "${MENU_OUT}" || true
+        
+        echo ">>> Built menu: ${MENU_OUT}"
+    else
+        echo ">>> Menu source not found (${MENU_SRC}), skipping"
+    fi
+}
+
 post_build_smoke() {
     echo ">>> Quick smoke test: list cameras"
     if ! "${OUT}" --list-cameras; then
@@ -117,12 +139,21 @@ post_build_smoke() {
     echo "  ${OUT} --list-cameras"
     echo "  ${OUT} --no-menu --source auto --encode auto --resolution 1280x720 --fps 30 --bitrate 4000000"
     echo "  ${OUT} --source /dev/video0 --encode hardware --resolution 1280x720 --fps 30 --bitrate 4000000 --no-overlay"
+    
+    # Show menu info if it was built
+    if [[ -x "${SCRIPT_DIR}/picam_menu" ]]; then
+        echo
+        echo "Interactive menu launcher:"
+        echo "  ${SCRIPT_DIR}/picam_menu"
+        echo "  LOG_FILE=menu.log ${SCRIPT_DIR}/picam_menu  # with logging"
+    fi
 }
 
 main() {
     ensure_deps
     check_runtime
     compile
+    compile_menu
     post_build_smoke
 }
 

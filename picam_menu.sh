@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # picam_menu.sh - convenience launcher for common benchmarking commands
-# Prpicamovides a simple text menu so you can quickly run frequently used
+# Provides a simple text menu so you can quickly run frequently used
 # command combinations without retyping them each time.
 
 set -euo pipefail
@@ -22,7 +22,7 @@ add_entry() {
 # Build and Setup
 add_entry "Build C implementation" "./build.sh"
 add_entry "Debug camera detection (bash)" "./picam.sh --debug-cameras"
-add_entry "List cameras (C version)" "./picam_bench --list-cameras"
+add_entry "List cameras (C version)" "./picam --list-cameras"
 add_entry "Test USB camera (bash)" "./picam.sh --test-usb"
 
 # Bash Script Tests - Various Resolutions and Settings
@@ -42,17 +42,17 @@ add_entry "C: 640x480 30fps USB /dev/video0" "./picam --source /dev/video0 --res
 add_entry "C: 1280x720 30fps auto-detect" "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 15"
 add_entry "C: 1920x1080 25fps CSI camera" "./picam --source csi --resolution 1920x1080 --fps 25 --bitrate 8000000 --duration 10"
 add_entry "C: 1920x1080 30fps USB hardware encode" "./picam --source /dev/video0 --encode hardware --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 12"
-add_entry "C: 1280x720 60fps software encode" "./picam_ --source auto --encode software --resolution 1280x720 --fps 60 --bitrate 5000000 --duration 8"
-add_entry "C: 800x600 25fps low bitrate" "./picam_ch --source auto --resolution 800x600 --fps 25 --bitrate 2000000 --duration 15"
+add_entry "C: 1280x720 60fps software encode" "./picam --source auto --encode software --resolution 1280x720 --fps 60 --bitrate 5000000 --duration 8"
+add_entry "C: 800x600 25fps low bitrate" "./picam --source auto --resolution 800x600 --fps 25 --bitrate 2000000 --duration 15"
 add_entry "C: 1920x1080 15fps high bitrate CSI" "./picam --source csi --resolution 1920x1080 --fps 15 --bitrate 10000000 --duration 20"
-add_entry "C: 1280x720 30fps framebuffer out" "./picam--source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --fb0 --duration 10"
+add_entry "C: 1280x720 30fps framebuffer out" "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --fb0 --duration 10"
 add_entry "C: 640x480 15fps USB infinite" "./picam --source /dev/video0 --resolution 640x480 --fps 15 --bitrate 1500000"
 add_entry "C: 1600x1200 20fps auto-detect" "./picam --source auto --resolution 1600x1200 --fps 20 --bitrate 7000000 --duration 12"
 
 # Special Tests and Interactive Modes
 add_entry "Bash: Interactive menu wizard" "./picam.sh"
 add_entry "Bash: No overlay performance test" "./picam.sh --no-menu --no-overlay --source auto --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10"
-add_entry "C: No overlay performance test" "./picam_bench --no-overlay --source auto --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10"
+add_entry "C: No overlay performance test" "./picam --no-overlay --source auto --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10"
 
 print_menu() {
   echo
