@@ -44,23 +44,58 @@ else
 fi
 
 echo -e "\n=== Camera Detection Test ==="
+
+# Test libcamera detection more thoroughly
+echo "Testing libcamera camera detection:"
+CAMERA_OUTPUT=$($CAMERA_CMD --list-cameras 2>&1)
+echo "$CAMERA_OUTPUT"
+
+if echo "$CAMERA_OUTPUT" | grep -q "Available cameras" && \
+   ! echo "$CAMERA_OUTPUT" | grep -q "ERROR.*no cameras available"; then
+    if echo "$CAMERA_OUTPUT" | grep -qv "usb@"; then
+        echo "CSI Camera: YES (libcamera found non-USB cameras)"
+    else
+        echo "CSI Camera: NO (libcamera only found USB cameras)"
+    fi
+else
+    echo "CSI Camera: NO (libcamera error or no cameras)"
+fi
+
+# Test USB camera detection
+echo -e "\nTesting USB camera detection:"
 detect_cameras() {
   local csi_available=0
   local usb_available=0
   local usb_device=""
   
-  # Check for CSI camera using libcamera
+  # Check for CSI camera using libcamera - more robust detection
   if command -v "$CAMERA_CMD" >/dev/null 2>&1; then
-    if $CAMERA_CMD --list-cameras 2>/dev/null | grep -q "Available cameras"; then
-      csi_available=1
+    local camera_output
+    camera_output=$($CAMERA_CMD --list-cameras 2>&1)
+    
+    # Check if there are actual CSI cameras (not just USB cameras detected by libcamera)
+    if echo "$camera_output" | grep -q "Available cameras" && \
+       ! echo "$camera_output" | grep -q "ERROR.*no cameras available"; then
+      # Further check: ensure it's not just USB cameras being detected
+      if echo "$camera_output" | grep -qv "usb@"; then
+        csi_available=1
+      fi
     fi
   fi
   
-  # Check for USB cameras
+  # Check for USB cameras using V4L2
   if ls /dev/video* >/dev/null 2>&1; then
     for device in /dev/video*; do
+      # Check if device is accessible and supports common formats
       if command -v v4l2-ctl >/dev/null 2>&1; then
         if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
+          usb_available=1
+          usb_device="$device"
+          break
+        fi
+      else
+        # Fallback: if v4l2-ctl not available, assume first video device is usable
+        if [[ -c "$device" ]]; then
           usb_available=1
           usb_device="$device"
           break
@@ -75,6 +110,23 @@ detect_cameras() {
 }
 
 detect_cameras
+
+# Test what camera type would be selected
+get_camera_type() {
+  local detection
+  detection=$(detect_cameras)
+  eval "$detection"
+  
+  if [[ "$csi_available" -eq 1 ]]; then
+    echo "csi"
+  elif [[ "$usb_available" -eq 1 ]]; then
+    echo "usb"
+  else
+    echo "none"
+  fi
+}
+
+echo -e "\nSelected camera type: $(get_camera_type)"
 
 echo -e "\n=== USB Camera Details ==="
 if ls /dev/video* >/dev/null 2>&1; then

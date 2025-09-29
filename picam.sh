@@ -67,20 +67,38 @@ detect_cameras() {
   local usb_available=0
   local usb_device=""
   
-  # Check for CSI camera using libcamera
+  # Check for CSI camera using libcamera - more robust detection
   if command -v "$(get_camera_command)" >/dev/null 2>&1; then
-    if "$(get_camera_command)" --list-cameras 2>/dev/null | grep -q "Available cameras"; then
-      csi_available=1
+    local camera_output
+    camera_output=$("$(get_camera_command)" --list-cameras 2>&1)
+    
+    # Check if there are actual CSI cameras (not just USB cameras detected by libcamera)
+    if echo "$camera_output" | grep -q "Available cameras" && \
+       ! echo "$camera_output" | grep -q "ERROR.*no cameras available"; then
+      # Further check: ensure it's not just USB cameras being detected
+      if echo "$camera_output" | grep -qv "usb@"; then
+        csi_available=1
+      fi
     fi
   fi
   
-  # Check for USB cameras
+  # Check for USB cameras using V4L2
   if ls /dev/video* >/dev/null 2>&1; then
     for device in /dev/video*; do
-      if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
-        usb_available=1
-        usb_device="$device"
-        break
+      # Check if device is accessible and supports common formats
+      if command -v v4l2-ctl >/dev/null 2>&1; then
+        if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
+          usb_available=1
+          usb_device="$device"
+          break
+        fi
+      else
+        # Fallback: if v4l2-ctl not available, assume first video device is usable
+        if [[ -c "$device" ]]; then
+          usb_available=1
+          usb_device="$device"
+          break
+        fi
       fi
     done
   fi
