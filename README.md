@@ -100,6 +100,150 @@ Opcja `--test-usb` korzysta bezpośrednio z `ffmpeg` i nie uruchamia pełnego pi
 
 To stop recording and preview, press `Ctrl+C` in the terminal running the script or application.
 
+## Command Examples
+
+### Bash Version (`picam.sh`)
+
+#### Basic Usage
+```bash
+# Interactive menu (default)
+./picam.sh
+
+# Skip menu with auto-detection
+./picam.sh --no-menu
+
+# Quick test with specific settings
+./picam.sh --no-menu --resolution 1280x720 --fps 30 --bitrate 4000000
+```
+
+#### Camera Source Selection
+```bash
+# Force CSI camera
+./picam.sh --no-menu --method h264_sdl_preview --resolution 1920x1080
+
+# Auto-detect best camera
+./picam.sh --no-menu --resolution 1280x720 --fps 25 --bitrate 2000000
+```
+
+#### High Quality Recording
+```bash
+# 1080p 30fps high bitrate
+./picam.sh --no-menu --resolution 1920x1080 --fps 30 --bitrate 8000000 --corner bottom-right
+
+# 720p 60fps (if supported)
+./picam.sh --no-menu --resolution 1280x720 --fps 60 --bitrate 6000000
+```
+
+#### Diagnostic Commands
+```bash
+# Check what cameras are detected
+./picam.sh --debug-cameras
+
+# Test USB camera quickly
+./picam.sh --test-usb
+
+# Check dependencies
+./picam.sh --check-deps
+
+# Install missing packages
+./picam.sh --install-deps
+```
+
+### C Version (`picam_bench`)
+
+#### Build First
+```bash
+# Build the C implementation
+./build.sh
+
+# Or build manually
+gcc -O2 -Wall -pthread -o picam_bench picam_bench.c
+```
+
+#### Basic Usage
+```bash
+# List available cameras
+./picam_bench --list-cameras
+
+# Auto-detect everything
+./picam_bench --source auto --encode auto --resolution 1280x720 --fps 30 --bitrate 4000000
+
+# Quick default test
+./picam_bench --no-menu --source auto --encode auto
+```
+
+#### Camera Source Selection
+```bash
+# Force CSI camera
+./picam_bench --source csi --encode hardware --resolution 1920x1080 --fps 30 --bitrate 6000000
+
+# Force specific USB camera
+./picam_bench --source /dev/video0 --encode software --resolution 1280x720 --fps 30 --bitrate 4000000
+
+# Auto-select with hardware encoding preference
+./picam_bench --source auto --encode hardware --resolution 1920x1080 --fps 25 --bitrate 8000000
+```
+
+#### Performance Testing
+```bash
+# High quality 1080p test
+./picam_bench --source auto --encode hardware --resolution 1920x1080 --fps 30 --bitrate 10000000
+
+# Low latency 720p test
+./picam_bench --source auto --encode hardware --resolution 1280x720 --fps 60 --bitrate 6000000 --no-overlay
+
+# Software encoding comparison
+./picam_bench --source auto --encode software --resolution 1280x720 --fps 30 --bitrate 4000000
+```
+
+#### USB Camera Specific
+```bash
+# Test Logitech C920 (common USB camera)
+./picam_bench --source /dev/video0 --encode hardware --resolution 1280x720 --fps 30 --bitrate 4000000
+
+# Test with different USB camera
+./picam_bench --source /dev/video2 --encode software --resolution 640x480 --fps 30 --bitrate 2000000
+```
+
+#### Overlay Options
+```bash
+# Disable performance overlay
+./picam_bench --source auto --encode auto --resolution 1280x720 --fps 30 --bitrate 4000000 --no-overlay
+
+# Default with overlay (shows FPS, bitrate, CPU, memory)
+./picam_bench --source auto --encode auto --resolution 1280x720 --fps 30 --bitrate 4000000
+```
+
+### Quick Test Sequence
+
+#### Test Everything Available
+```bash
+# 1. Check what cameras are detected
+./picam.sh --debug-cameras
+
+# 2. Test bash version with auto-detection
+./picam.sh --no-menu --resolution 1280x720 --fps 30 --bitrate 4000000
+
+# 3. Build and test C version
+./build.sh
+./picam_bench --list-cameras
+./picam_bench --source auto --encode auto --resolution 1280x720 --fps 30 --bitrate 4000000
+```
+
+#### Troubleshooting Commands
+```bash
+# If USB camera not detected
+./picam.sh --debug-cameras
+./picam.sh --test-usb
+
+# If build fails
+./build.sh  # Check error output
+sudo apt update && sudo apt install build-essential linux-libc-dev
+
+# If ffmpeg preview fails
+./picam_bench --source auto --encode auto --no-overlay --resolution 640x480 --fps 15
+```
+
 ## Key Features
 
 - **Robust USB Camera Detection**: Advanced hex capability parsing for V4L2 devices with fallback detection methods
