@@ -30,6 +30,11 @@
 #include <time.h>
 #include <unistd.h>
 
+// Ensure PATH_MAX is defined
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 // Logging system
 typedef enum
 {
@@ -73,7 +78,7 @@ typedef struct
     int bitrate;
     char corner[32];
     source_t source_mode;
-    char source_node[128]; // e.g., /dev/video0
+    char source_node[128];   // e.g., /dev/video0
     encode_t encode_mode;
     int skip_menu;           // not implemented for C; kept for CLI compatibility
     int duration;            // recording duration in seconds (0 = infinite)
