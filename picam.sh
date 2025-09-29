@@ -220,10 +220,23 @@ detect_cameras() {
     for device in /dev/video*; do
       # Check if device is accessible and supports common formats
       if command -v v4l2-ctl >/dev/null 2>&1; then
-        if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
-          usb_available=1
-          usb_device="$device"
-          break
+        local driver_info
+        driver_info=$(v4l2-ctl --device="$device" --all 2>/dev/null || true)
+        if [[ -z "$driver_info" ]]; then
+          continue
+        fi
+
+        if echo "$driver_info" | grep -qi "bcm2835\|codec\|isp"; then
+          continue
+        fi
+
+        if echo "$driver_info" | grep -qiE "Driver name:[[:space:]]*uvcvideo" && \
+           echo "$driver_info" | grep -qi "Capabilities:.*Video Capture"; then
+          if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
+            usb_available=1
+            usb_device="$device"
+            break
+          fi
         fi
       else
         # Fallback: if v4l2-ctl not available, assume first video device is usable
@@ -677,12 +690,13 @@ show_whiptail_wizard() {
       # Skip Pi's internal video processing devices
       if command -v v4l2-ctl >/dev/null 2>&1; then
         local driver_info
-        driver_info=$(v4l2-ctl --device="$device" --info 2>/dev/null || true)
-        if echo "$driver_info" | grep -q "bcm2835\|codec\|isp"; then
+        driver_info=$(v4l2-ctl --device="$device" --all 2>/dev/null || true)
+        if echo "$driver_info" | grep -qi "bcm2835\|codec\|isp"; then
           continue
         fi
         
-        if echo "$driver_info" | grep -q "uvcvideo\|usb"; then
+        if echo "$driver_info" | grep -qiE "Driver name:[[:space:]]*uvcvideo" && \
+           echo "$driver_info" | grep -qi "Capabilities:.*Video Capture"; then
           local card_name
           card_name=$(echo "$driver_info" | grep "Card type" | cut -d: -f2 | xargs)
           source_options+=("$device" "USB: ${card_name:-Unknown}")
@@ -891,12 +905,13 @@ list_available_cameras() {
       # Skip non-capture devices (bcm2835 codec devices)
       local driver_info
       if command -v v4l2-ctl >/dev/null 2>&1; then
-        driver_info=$(v4l2-ctl --device="$device" --info 2>/dev/null || true)
-        if echo "$driver_info" | grep -q "bcm2835\|codec\|isp"; then
+        driver_info=$(v4l2-ctl --device="$device" --all 2>/dev/null || true)
+        if echo "$driver_info" | grep -qi "bcm2835\|codec\|isp"; then
           continue  # Skip Pi's internal video processing devices
         fi
         
-        if echo "$driver_info" | grep -q "uvcvideo\|usb"; then
+        if echo "$driver_info" | grep -qiE "Driver name:[[:space:]]*uvcvideo" && \
+           echo "$driver_info" | grep -qi "Capabilities:.*Video Capture"; then
           echo "✓ USB Camera: $device (use: --source $device)"
           echo "$driver_info" | head -3 | sed 's/^/  /'
           found_usb=1
@@ -1120,14 +1135,11 @@ run_h264_sdl_preview() {
   local overlay_y="$OVERLAY_Y"
 
   local font_path=""
-  if [[ -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf ]]; then
-    font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-  elif [[ -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf ]]; then
-    font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-  fi
+  find_font_path font_path
 
-  local video_fifo
-  video_fifo=$(mktemp -u /tmp/picam_video.XXXXXX)
+  local tmpdir video_fifo
+  tmpdir="$(mktemp -d)"
+  video_fifo="$tmpdir/video.h264"
   mkfifo "$video_fifo"
 
   local stats_file
@@ -1150,7 +1162,7 @@ run_h264_sdl_preview() {
     stop_process "$monitor_pid"
     stop_process "$camera_pid"
     stop_process "$ffmpeg_pid"
-    rm -f "$video_fifo" "$stats_file" "$ffmpeg_log"
+    rm -rf "$tmpdir" "$stats_file" "$ffmpeg_log"
   }
 
   trap cleanup_pipeline EXIT INT TERM
@@ -1163,15 +1175,15 @@ run_h264_sdl_preview() {
   fi
 
   stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
-    -fflags nobuffer -flags low_delay -framedrop \
+    -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
     -f h264 -i "$video_fifo" \
     -vf "$drawtext" -an -f sdl "PiCam Preview" \
     2> >(stdbuf -oL tee "$ffmpeg_log") &
   ffmpeg_pid=$!
 
-  stdbuf -oL "$(get_camera_command)" --inline --codec h264 -t 0 \
+  stdbuf -oL "$(get_camera_command)" --inline --codec h264 --timeout 0 \
     --width "$width" --height "$height" --framerate "$fps" \
-    --bitrate "$bitrate" -o "$video_fifo" &
+    --bitrate "$bitrate" -o - > "$video_fifo" &
   camera_pid=$!
 
   monitor_metrics "$stats_file" "$ffmpeg_log" "$width" "$height" "$bitrate" "$fps" "$camera_pid" "$ffmpeg_pid" &
@@ -1212,8 +1224,9 @@ run_usb_h264_sdl_preview() {
     fi
   fi
 
-  local video_fifo stats_file ffmpeg_log font_path overlay_x overlay_y
-  video_fifo=$(mktemp -u --suffix=.h264)
+  local tmpdir video_fifo stats_file ffmpeg_log font_path overlay_x overlay_y
+  tmpdir="$(mktemp -d)"
+  video_fifo="$tmpdir/video.h264"
   stats_file=$(mktemp --suffix=.txt)
   ffmpeg_log=$(mktemp --suffix=.log)
 
@@ -1235,7 +1248,7 @@ run_usb_h264_sdl_preview() {
     stop_process "$monitor_pid"
     stop_process "$camera_pid"
     stop_process "$ffmpeg_pid"
-    rm -f "$video_fifo" "$stats_file" "$ffmpeg_log"
+    rm -rf "$tmpdir" "$stats_file" "$ffmpeg_log"
   }
 
   trap cleanup_pipeline EXIT INT TERM
@@ -1248,32 +1261,52 @@ run_usb_h264_sdl_preview() {
   fi
 
   stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
-    -fflags nobuffer -flags low_delay -framedrop \
+    -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
     -f h264 -i "$video_fifo" \
     -vf "$drawtext" -an -f sdl "USB Camera Preview" \
     2> >(stdbuf -oL tee "$ffmpeg_log") &
   ffmpeg_pid=$!
 
   # Use ffmpeg to capture from USB camera and encode to H.264
+  local input_format=""
+  if command -v v4l2-ctl >/dev/null 2>&1; then
+    local fmts
+    fmts=$(v4l2-ctl --device="$usb_device" --list-formats-ext 2>/dev/null || true)
+    if grep -q "H264" <<<"$fmts"; then
+      input_format="h264"
+    elif grep -q "MJPG" <<<"$fmts"; then
+      input_format="mjpeg"
+    elif grep -q "YUYV" <<<"$fmts"; then
+      input_format="yuyv422"
+    fi
+  fi
+
   local encoding_method
   encoding_method=$(get_encoding_method)
-  
+
+  local -a ffmpeg_input_args=( -f v4l2 )
+  if [[ -n "$input_format" ]]; then
+    ffmpeg_input_args+=( -input_format "$input_format" )
+  fi
+  ffmpeg_input_args+=( -video_size "${width}x${height}" -framerate "$FPS" -i "$usb_device" )
+
   if [[ "$encoding_method" == "hardware" ]]; then
-    # Hardware encoding pipeline: USB camera -> hardware encoder -> H.264
-    stdbuf -oL ffmpeg -hide_banner -loglevel error \
-      -f v4l2 -input_format mjpeg -video_size "${width}x${height}" -framerate "$FPS" \
-      -i "$usb_device" \
-      -f rawvideo -pix_fmt yuv420p - \
-      2>/dev/null | \
-    v4l2-ctl --device=/dev/video11 --set-fmt-video=width="$width",height="$height",pixelformat=H264 \
-      --stream-to="$video_fifo" --stream-from=- \
-      2>/dev/null &
-    camera_pid=$!
+    if [[ "$input_format" == "h264" ]]; then
+      stdbuf -oL ffmpeg -hide_banner -loglevel error \
+        "${ffmpeg_input_args[@]}" \
+        -c:v copy -f h264 "$video_fifo" &
+      camera_pid=$!
+    else
+      stdbuf -oL ffmpeg -hide_banner -loglevel error \
+        "${ffmpeg_input_args[@]}" \
+        -pix_fmt nv12 -c:v h264_v4l2m2m \
+        -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize $((BITRATE * 2)) \
+        -f h264 "$video_fifo" &
+      camera_pid=$!
+    fi
   else
-    # Software encoding pipeline (original)
     stdbuf -oL ffmpeg -hide_banner -loglevel error \
-      -f v4l2 -input_format mjpeg -video_size "${width}x${height}" -framerate "$FPS" \
-      -i "$usb_device" \
+      "${ffmpeg_input_args[@]}" \
       -c:v libx264 -preset ultrafast -tune zerolatency \
       -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize $((BITRATE * 2)) \
       -f h264 "$video_fifo" &
@@ -1371,11 +1404,6 @@ main() {
     else
       exit 1
     fi
-  fi
-
-  if (( LIST_CAMERAS_ONLY )); then
-    list_available_cameras
-    exit 0
   fi
 
   if (( LIST_CAMERAS_ONLY )); then
