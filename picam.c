@@ -75,9 +75,11 @@ typedef struct
     source_t source_mode;
     char source_node[128]; // e.g., /dev/video0
     encode_t encode_mode;
-    int skip_menu;       // not implemented for C; kept for CLI compatibility
-    int duration;        // recording duration in seconds (0 = infinite)
-    int use_framebuffer; // output to framebuffer instead of SDL
+    int skip_menu;           // not implemented for C; kept for CLI compatibility
+    int duration;            // recording duration in seconds (0 = infinite)
+    int use_framebuffer;     // output to framebuffer instead of SDL
+    int verbose;             // logging verbosity level (0=error, 1=info, 2=debug)
+    char log_file[PATH_MAX]; // log file path (empty = stderr)
 } cfg_t;
 
 typedef struct
