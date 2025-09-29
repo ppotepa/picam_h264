@@ -63,8 +63,8 @@ typedef struct
     source_t source_mode;
     char source_node[128]; // e.g., /dev/video0
     encode_t encode_mode;
-    int skip_menu; // not implemented for C; kept for CLI compatibility
-    int duration; // recording duration in seconds (0 = infinite)
+    int skip_menu;       // not implemented for C; kept for CLI compatibility
+    int duration;        // recording duration in seconds (0 = infinite)
     int use_framebuffer; // output to framebuffer instead of SDL
 } cfg_t;
 
@@ -606,25 +606,29 @@ static void start_preview(ctx_t *ctx, const cfg_t *cfg, const char *title)
     argv[ac++] = "h264";
     argv[ac++] = "-i";
     argv[ac++] = (char *)ctx->fifo_path;
-    
+
     // Add duration if specified
     char duration_str[16];
-    if (cfg->duration > 0) {
+    if (cfg->duration > 0)
+    {
         snprintf(duration_str, sizeof(duration_str), "%d", cfg->duration);
         argv[ac++] = "-t";
         argv[ac++] = duration_str;
     }
-    
+
     argv[ac++] = "-vf";
     argv[ac++] = draw;
     argv[ac++] = "-an";
     argv[ac++] = "-f";
-    
+
     // Choose output method
-    if (cfg->use_framebuffer) {
+    if (cfg->use_framebuffer)
+    {
         argv[ac++] = "fbdev";
         argv[ac++] = "/dev/fb0";
-    } else {
+    }
+    else
+    {
         argv[ac++] = "sdl";
         argv[ac++] = (char *)title;
     }
@@ -652,7 +656,7 @@ static void start_csi_camera(ctx_t *ctx, const cfg_t *cfg)
     snprintf(h, sizeof(h), "%d", cfg->height);
     snprintf(fr, sizeof(fr), "%d", cfg->fps);
     snprintf(br, sizeof(br), "%d", cfg->bitrate);
-    
+
     // Convert duration to milliseconds for camera timeout
     int timeout_ms = cfg->duration > 0 ? cfg->duration * 1000 : 0;
     snprintf(timeout_str, sizeof(timeout_str), "%d", timeout_ms);
@@ -708,7 +712,8 @@ static void start_usb_ffmpeg(ctx_t *ctx, const cfg_t *cfg, const char *devnode, 
     argv[ac++] = (char *)devnode;
 
     // Add duration if specified
-    if (cfg->duration > 0) {
+    if (cfg->duration > 0)
+    {
         snprintf(duration_str, sizeof(duration_str), "%d", cfg->duration);
         argv[ac++] = "-t";
         argv[ac++] = duration_str;

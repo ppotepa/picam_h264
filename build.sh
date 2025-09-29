@@ -8,8 +8,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SRC="${SCRIPT_DIR}/picam_bench.c"
-OUT="${SCRIPT_DIR}/picam_bench"
+SRC="${SCRIPT_DIR}/picam.c"
+OUT="${SCRIPT_DIR}/picam"
 
 : "${SKIP_INSTALL:=0}"
 : "${VERBOSE:=0}"
