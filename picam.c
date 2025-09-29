@@ -38,6 +38,7 @@
 #define DEFAULT_CORNER "top-left"
 #define DEFAULT_SOURCE "auto"
 #define DEFAULT_ENCODE "auto"
+#define DEFAULT_DURATION 0
 
 typedef enum
 {
@@ -63,6 +64,8 @@ typedef struct
     char source_node[128]; // e.g., /dev/video0
     encode_t encode_mode;
     int skip_menu; // not implemented for C; kept for CLI compatibility
+    int duration; // recording duration in seconds (0 = infinite)
+    int use_framebuffer; // output to framebuffer instead of SDL
 } cfg_t;
 
 typedef struct
@@ -568,11 +571,11 @@ static void *stats_writer(void *arg)
 
 // ---------- pipeline builders ----------
 
-static void start_preview(ctx_t *ctx, const char *title)
+static void start_preview(ctx_t *ctx, const cfg_t *cfg, const char *title)
 {
     // Build ffmpeg drawtext
     const char *ox, *oy;
-    overlay_coords(DEFAULT_CORNER, &ox, &oy); // we'll override corner via cfg later if needed
+    overlay_coords(cfg->corner, &ox, &oy);
     // We can't easily probe fonts in C; rely on DejaVu
     char *draw = NULL;
     xasprintf(&draw,
@@ -581,25 +584,59 @@ static void start_preview(ctx_t *ctx, const char *title)
               "box=1:boxcolor=0x000000AA:boxborderw=8:line_spacing=6",
               ctx->stats_path, ox, oy);
 
-    // ffmpeg preview (read from FIFO -> SDL)
+    // ffmpeg preview (read from FIFO -> SDL or framebuffer)
     // NOTE: no '-framedrop' (ffplay-only). Add low-latency flags.
-    char fps_arg[16];
-    snprintf(fps_arg, sizeof(fps_arg), "%d", ctx->fps);
-    char *const argv[] = {
-        "ffmpeg",
-        "-hide_banner", "-loglevel", "info", "-stats",
-        "-fflags", "+nobuffer", "-flags", "+low_delay", "-reorder_queue_size", "0", "-thread_queue_size", "512",
-        "-f", "h264", "-i", (char *)ctx->fifo_path,
-        "-vf", draw,
-        "-an", "-f", "sdl", (char *)title,
-        NULL};
+#define MAXARGS 64
+    char *argv[MAXARGS];
+    int ac = 0;
+    argv[ac++] = "ffmpeg";
+    argv[ac++] = "-hide_banner";
+    argv[ac++] = "-loglevel";
+    argv[ac++] = "info";
+    argv[ac++] = "-stats";
+    argv[ac++] = "-fflags";
+    argv[ac++] = "+nobuffer";
+    argv[ac++] = "-flags";
+    argv[ac++] = "+low_delay";
+    argv[ac++] = "-reorder_queue_size";
+    argv[ac++] = "0";
+    argv[ac++] = "-thread_queue_size";
+    argv[ac++] = "512";
+    argv[ac++] = "-f";
+    argv[ac++] = "h264";
+    argv[ac++] = "-i";
+    argv[ac++] = (char *)ctx->fifo_path;
+    
+    // Add duration if specified
+    char duration_str[16];
+    if (cfg->duration > 0) {
+        snprintf(duration_str, sizeof(duration_str), "%d", cfg->duration);
+        argv[ac++] = "-t";
+        argv[ac++] = duration_str;
+    }
+    
+    argv[ac++] = "-vf";
+    argv[ac++] = draw;
+    argv[ac++] = "-an";
+    argv[ac++] = "-f";
+    
+    // Choose output method
+    if (cfg->use_framebuffer) {
+        argv[ac++] = "fbdev";
+        argv[ac++] = "/dev/fb0";
+    } else {
+        argv[ac++] = "sdl";
+        argv[ac++] = (char *)title;
+    }
+    argv[ac++] = NULL;
+
     child_t ch = spawn_child(argv, -1, -1, /*capture_stderr*/ 1);
     ctx->prev_pid = ch.pid;
     ctx->prev_stderr_fd = ch.stderr_fd;
     free(draw);
 }
 
-static void start_csi_camera(ctx_t *ctx, int width, int height, int fps, int bitrate)
+static void start_csi_camera(ctx_t *ctx, const cfg_t *cfg)
 {
     const char *cmd = camera_cmd();
     if (!cmd)
@@ -610,15 +647,19 @@ static void start_csi_camera(ctx_t *ctx, int width, int height, int fps, int bit
     if (fifo_fd < 0)
         die("open fifo for write: %s", strerror(errno));
 
-    char w[16], h[16], fr[16], br[32];
-    snprintf(w, sizeof(w), "%d", width);
-    snprintf(h, sizeof(h), "%d", height);
-    snprintf(fr, sizeof(fr), "%d", fps);
-    snprintf(br, sizeof(br), "%d", bitrate);
+    char w[16], h[16], fr[16], br[32], timeout_str[16];
+    snprintf(w, sizeof(w), "%d", cfg->width);
+    snprintf(h, sizeof(h), "%d", cfg->height);
+    snprintf(fr, sizeof(fr), "%d", cfg->fps);
+    snprintf(br, sizeof(br), "%d", cfg->bitrate);
+    
+    // Convert duration to milliseconds for camera timeout
+    int timeout_ms = cfg->duration > 0 ? cfg->duration * 1000 : 0;
+    snprintf(timeout_str, sizeof(timeout_str), "%d", timeout_ms);
 
     char *const argv[] = {
         (char *)cmd,
-        "--inline", "--codec", "h264", "--timeout", "0",
+        "--inline", "--codec", "h264", "--timeout", timeout_str,
         "--width", w, "--height", h, "--framerate", fr,
         "--bitrate", br,
         "-o", "-", // stdout
@@ -627,7 +668,7 @@ static void start_csi_camera(ctx_t *ctx, int width, int height, int fps, int bit
     ctx->cam_pid = ch.pid;
 }
 
-static void start_usb_ffmpeg(ctx_t *ctx, const char *devnode, fmt_support_t fs, encode_t enc)
+static void start_usb_ffmpeg(ctx_t *ctx, const cfg_t *cfg, const char *devnode, fmt_support_t fs, encode_t enc)
 {
     // Decide input_format and encoder
     const char *infmt = NULL;
@@ -640,10 +681,10 @@ static void start_usb_ffmpeg(ctx_t *ctx, const char *devnode, fmt_support_t fs, 
     else
         infmt = "mjpeg";
 
-    char sz[32], fr[16], br[32];
-    snprintf(sz, sizeof(sz), "%dx%d", ctx->width, ctx->height);
-    snprintf(fr, sizeof(fr), "%d", ctx->fps);
-    snprintf(br, sizeof(br), "%d", ctx->bitrate);
+    char sz[32], fr[16], br[32], duration_str[16];
+    snprintf(sz, sizeof(sz), "%dx%d", cfg->width, cfg->height);
+    snprintf(fr, sizeof(fr), "%d", cfg->fps);
+    snprintf(br, sizeof(br), "%d", cfg->bitrate);
 
 // Build argv dynamically
 // Common head:
@@ -665,6 +706,13 @@ static void start_usb_ffmpeg(ctx_t *ctx, const char *devnode, fmt_support_t fs, 
     argv[ac++] = fr;
     argv[ac++] = "-i";
     argv[ac++] = (char *)devnode;
+
+    // Add duration if specified
+    if (cfg->duration > 0) {
+        snprintf(duration_str, sizeof(duration_str), "%d", cfg->duration);
+        argv[ac++] = "-t";
+        argv[ac++] = duration_str;
+    }
 
     if (fs.h264)
     {
@@ -723,11 +771,13 @@ static void usage(const char *prog)
             "  -c, --corner <pos>           top-left|top-right|bottom-left|bottom-right\n"
             "  -s, --source <auto|csi|/dev/videoN> (default " DEFAULT_SOURCE ")\n"
             "  -e, --encode <auto|software|hardware> (default " DEFAULT_ENCODE ")\n"
+            "  -d, --duration <seconds>     recording duration (default %d, 0=infinite)\n"
+            "      --fb0, --framebuffer     output to /dev/fb0 instead of SDL\n"
             "      --list-cameras\n"
             "      --no-menu                (ignored; for compatibility)\n"
             "      --no-overlay             (skip drawtext + stats thread)\n"
             "  -h, --help\n",
-            prog, DEFAULT_RESOLUTION_W, DEFAULT_RESOLUTION_H, DEFAULT_FPS, DEFAULT_BITRATE);
+            prog, DEFAULT_RESOLUTION_W, DEFAULT_RESOLUTION_H, DEFAULT_FPS, DEFAULT_BITRATE, DEFAULT_DURATION);
 }
 
 static void parse_res(const char *s, int *w, int *h)
@@ -749,6 +799,8 @@ static void parse_cfg(int argc, char **argv, cfg_t *cfg, int *list_only, int *no
     cfg->source_node[0] = 0;
     cfg->encode_mode = ENC_AUTO;
     cfg->skip_menu = 1;
+    cfg->duration = DEFAULT_DURATION;
+    cfg->use_framebuffer = 0;
     *list_only = 0;
     *no_overlay = 0;
 
@@ -829,6 +881,16 @@ static void parse_cfg(int argc, char **argv, cfg_t *cfg, int *list_only, int *no
         else if (!strcmp(a, "--no-overlay"))
         {
             *no_overlay = 1;
+        }
+        else if (!strcmp(a, "-d") || !strcmp(a, "--duration"))
+        {
+            if (++i >= argc)
+                die("missing value");
+            cfg->duration = atoi(argv[i]);
+        }
+        else if (!strcmp(a, "--fb0") || !strcmp(a, "--framebuffer"))
+        {
+            cfg->use_framebuffer = 1;
         }
         else
             die("unknown arg: %s", a);
@@ -992,21 +1054,21 @@ int main(int argc, char **argv)
     }
 
     // Start preview (captures stderr for stats parsing)
-    start_preview(&ctx, use_csi ? "PiCam Preview (CSI)" : "USB Camera Preview");
+    start_preview(&ctx, &cfg, use_csi ? "PiCam Preview (CSI)" : "USB Camera Preview");
 
     // Start camera path
     if (use_csi)
     {
         if (!have_cam_cmd)
             die("rpicam-vid/libcamera-vid required for CSI");
-        start_csi_camera(&ctx, cfg.width, cfg.height, cfg.fps, cfg.bitrate);
+        start_csi_camera(&ctx, &cfg);
     }
     else
     {
         // usbnode prefilled by auto or user
         if (usbnode[0] == 0)
             snprintf(usbnode, sizeof(usbnode), "%s", cfg.source_node);
-        start_usb_ffmpeg(&ctx, usbnode, usbfmt, enc);
+        start_usb_ffmpeg(&ctx, &cfg, usbnode, usbfmt, enc);
     }
 
     // Stats threads
