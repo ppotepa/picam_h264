@@ -1,6 +1,17 @@
 # picam_h264
 
-Skrypt `picam.sh` udostępnia interaktywne menu (whiptail) oraz argumenty wiersza poleceń do uruchamiania testów wydajności kamery na Raspberry Pi Zero W. Domyślna metoda pipeline korzysta z kodowania H.264, procesów `libcamera-vid`/`rpicam-vid` (zależnie od wersji systemu) oraz podglądu SDL uruchamianego przez `ffmpeg`. Skrypt potrafi również automatycznie przełączyć się na rejestrację z kamer USB (V4L2), dzięki czemu nie trzeba ręcznie modyfikować konfiguracji.
+Skrypt `picam.sh` udostęp### Tryby diagnostyczne
+
+`picam.sh` udostępnia kilka przełączników pomocnych przy rozwiązywaniu problemów:
+
+```bash
+./picam.sh --check-deps       # weryfikuje zależności, nie instaluje pakietów
+./picam.sh --install-deps     # doinstalowuje brakujące pakiety i kończy działanie
+./picam.sh --debug-cameras    # wypisuje raport wykrytych kamer (CSI/USB)
+./picam.sh --test-usb         # uruchamia 5‑sekundowy test przechwytywania z kamery USB
+```
+
+Opcja `--test-usb` korzysta bezpośrednio z `ffmpeg` i nie uruchamia pełnego pipeline'u – to szybki sposób na sprawdzenie, czy urządzenie USB jest poprawnie dostępne. Skrypt automatycznie wykrywa dostępne formaty kamery (H264, MJPEG, YUYV) i dobiera najlepszy dostępny. W przypadku problemów, podejmuje próbę przechwycenia obrazu bez określania formatu.ywne menu (whiptail) oraz argumenty wiersza poleceń do uruchamiania testów wydajności kamery na Raspberry Pi Zero W. Domyślna metoda pipeline korzysta z kodowania H.264, procesów `libcamera-vid`/`rpicam-vid` (zależnie od wersji systemu) oraz podglądu SDL uruchamianego przez `ffmpeg`. Skrypt potrafi również automatycznie przełączyć się na rejestrację z kamer USB (V4L2), dzięki czemu nie trzeba ręcznie modyfikować konfiguracji.
 
 ## Wymagania
 

@@ -40,6 +40,37 @@ Examples:
 USAGE
 }
 
+find_font_path() {
+  local -n result=$1
+  result=""
+  
+  # Common font paths to check (in order of preference)
+  local font_paths=(
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    "/usr/share/fonts/ttf-dejavu/DejaVuSans.ttf"
+    "/usr/share/fonts/TTF/DejaVuSans.ttf"
+    "/usr/share/fonts/truetype/ttf-dejavu/DejaVuSans.ttf"
+  )
+  
+  # Check each font path
+  for font in "${font_paths[@]}"; do
+    if [[ -f "$font" ]]; then
+      result="$font"
+      return
+    fi
+  done
+  
+  # If no specific font was found, try to find any TTF font
+  if command -v find &>/dev/null; then
+    local found_font
+    found_font=$(find /usr/share/fonts -name "*.ttf" -print -quit 2>/dev/null)
+    if [[ -n "$found_font" ]]; then
+      result="$found_font"
+    fi
+  fi
+}
+
 REQUIRED_COMMANDS_BASE=(
   libcamera-vid
   ffmpeg
@@ -478,6 +509,38 @@ show_whiptail_wizard() {
   OVERLAY_CORNER="$corner_choice"
 }
 
+compute_overlay_position() {
+  local corner="$1"
+  local width="$2"
+  local height="$3"
+  local -n x_result="$4"
+  local -n y_result="$5"
+  
+  case "$corner" in
+    top-left)
+      x_result="10"
+      y_result="10"
+      ;;
+    top-right)
+      x_result="w-tw-10"
+      y_result="10"
+      ;;
+    bottom-left)
+      x_result="10"
+      y_result="h-th-10"
+      ;;
+    bottom-right)
+      x_result="w-tw-10"
+      y_result="h-th-10"
+      ;;
+    *)
+      # Default to top-left if unknown
+      x_result="10"
+      y_result="10"
+      ;;
+  esac
+}
+
 overlay_position() {
   local corner="$1"
   case "$corner" in
@@ -666,19 +729,41 @@ run_usb_camera_test() {
   local height="$HEIGHT"
 
   local usb_device=""
+  local input_format=""
+  
   if ls /dev/video* >/dev/null 2>&1; then
     if command -v v4l2-ctl >/dev/null 2>&1; then
       for device in /dev/video*; do
         [[ -c "$device" ]] || continue
-        if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
+        
+        echo "Checking device: $device"
+        local formats
+        formats=$(v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null)
+        
+        # Check for available formats in order of preference
+        if echo "$formats" | grep -q "H264"; then
           usb_device="$device"
+          input_format="h264"
+          echo "Found H264 capable device: $device"
+          break
+        elif echo "$formats" | grep -q "MJPG"; then
+          usb_device="$device"
+          input_format="mjpeg"
+          echo "Found MJPEG capable device: $device"
+          break
+        elif echo "$formats" | grep -q "YUYV"; then
+          usb_device="$device"
+          input_format="yuyv422"
+          echo "Found YUYV capable device: $device"
           break
         fi
       done
     else
+      # If v4l2-ctl is not available, try the first device with mjpeg (most common)
       for device in /dev/video*; do
         [[ -c "$device" ]] || continue
         usb_device="$device"
+        input_format="mjpeg"  # Default to mjpeg
         break
       done
     fi
@@ -689,14 +774,21 @@ run_usb_camera_test() {
     return 1
   fi
 
-  echo "Selected device: $usb_device"
+  echo "Selected device: $usb_device with format: $input_format"
 
   if ! command -v ffmpeg >/dev/null 2>&1; then
     echo "ffmpeg is required for the USB camera test." >&2
     return 1
   fi
 
-  local capture_cmd=(ffmpeg -f v4l2 -input_format mjpeg -video_size "${width}x${height}" -framerate "$FPS" -i "$usb_device" -t 5 -f null -)
+  local capture_cmd
+  if [[ -n "$input_format" ]]; then
+    capture_cmd=(ffmpeg -f v4l2 -input_format "$input_format" -video_size "${width}x${height}" -framerate "$FPS" -i "$usb_device" -t 5 -f null -)
+  else
+    # If format detection failed, try without specifying a format (let ffmpeg auto-detect)
+    capture_cmd=(ffmpeg -f v4l2 -video_size "${width}x${height}" -framerate "$FPS" -i "$usb_device" -t 5 -f null -)
+  fi
+  
   local timeout_cmd=()
   if command -v timeout >/dev/null 2>&1; then
     timeout_cmd=(timeout 6s)
@@ -706,15 +798,26 @@ run_usb_camera_test() {
   local ffmpeg_output
   if ! ffmpeg_output=$("${timeout_cmd[@]}" "${capture_cmd[@]}" 2>&1); then
     printf '%s\n' "$ffmpeg_output"
-    echo "ffmpeg capture reported an error." >&2
-    return 1
+    echo "ffmpeg capture reported an error. Trying without format specification..." >&2
+    
+    # Try again without format specification
+    capture_cmd=(ffmpeg -f v4l2 -video_size "${width}x${height}" -framerate "$FPS" -i "$usb_device" -t 5 -f null -)
+    if ! ffmpeg_output=$("${timeout_cmd[@]}" "${capture_cmd[@]}" 2>&1); then
+      printf '%s\n' "$ffmpeg_output"
+      echo "Second capture attempt also failed." >&2
+      return 1
+    fi
   fi
 
   printf '%s\n' "$ffmpeg_output" | tail -n 10
   echo
   echo "USB camera test completed successfully."
   echo "You can run the capture manually with:"
-  echo "ffmpeg -f v4l2 -input_format mjpeg -video_size ${width}x${height} -framerate $FPS -i $usb_device -t 5 output.mp4"
+  if [[ -n "$input_format" ]]; then
+    echo "ffmpeg -f v4l2 -input_format $input_format -video_size ${width}x${height} -framerate $FPS -i $usb_device -t 5 output.mp4"
+  else
+    echo "ffmpeg -f v4l2 -video_size ${width}x${height} -framerate $FPS -i $usb_device -t 5 output.mp4"
+  fi
 }
 
 run_h264_sdl_preview() {
