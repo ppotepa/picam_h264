@@ -1,92 +1,120 @@
 #!/usr/bin/env bash
-# list-devnodes.sh — lists USB and non-USB devices with their /dev nodes and key metadata
-# Works on Raspberry Pi (Linux) with udev. No extra packages required.
+# list-devices.sh — list USB and non-USB devices with their /dev nodes + metadata
+# Works on Raspberry Pi OS / any udev-based Linux. No extra packages required.
 
 set -euo pipefail
 
-# Utility: safe readlink basename
+# ===== helpers =====
 bn() { basename "$(readlink -f "$1" 2>/dev/null || echo "$1")"; }
 
-# Utility: extract a prop from a udevadm --query=property blob
 get_prop() {
-  # $1 = blob, $2 = key
+  # $1 = blob, $2 = KEY
   printf '%s\n' "$1" | awk -F= -v k="$2" '$1==k{ $1=""; sub(/^=/,""); print; exit }'
 }
 
-printf "%-28s %-14s %-14s %-10s %-20s %-24s %s\n" \
-  "DEVNODE" "SUBSYSTEM" "DRIVER" "BUS" "VENDOR:MODEL" "SERIAL" "ID_PATH"
-printf "%-28s %-14s %-14s %-10s %-20s %-24s %s\n" \
-  "----------------------------" "------------" "------------" "--------" "--------------------" "------------------------" "-----------------------------"
+print_header() {
+  printf "%-28s %-14s %-14s %-10s %-24s %-24s %s\n" \
+    "DEVNODE" "SUBSYSTEM" "DRIVER" "BUS" "VENDOR:MODEL" "SERIAL" "ID_PATH"
+  printf "%-28s %-14s %-14s %-10s %-24s %-24s %s\n" \
+    "----------------------------" "------------" "------------" "--------" \
+    "------------------------" "------------------------" "-----------------------------"
+}
 
-# Iterate over all kernel devices that expose a /dev node via uevent (DEVNAME)
-# This avoids pseudo devices like /dev/null which lack a backing kernel device with uevent.
-while IFS= read -r -d '' uevent; do
-  devdir="$(dirname "$uevent")"
-  # Pull DEVNAME from uevent (faster than spawning udevadm for this)
-  devname="$(grep -m1 '^DEVNAME=' "$uevent" | cut -d= -f2 || true)"
-  [[ -n "$devname" ]] || continue
+emit_row() {
+  local devnode="$1" devdir="$2"
 
-  devnode="/dev/$devname"
-  [[ -e "$devnode" ]] || continue  # Skip if node doesn't exist (very rare race)
+  # Prefer udevadm by *name* (fast, robust), fall back to *path*
+  local props=""
+  props="$(udevadm info --query=property --name="$devnode" 2>/dev/null || true)"
+  if [[ -z "$props" && -n "$devdir" ]]; then
+    props="$(udevadm info --query=property --path="$devdir" 2>/dev/null || true)"
+  fi
 
-  # Full udev property set for this device
-  props="$(udevadm info --query=property --path="$devdir" 2>/dev/null || true)"
-
+  # Subsystem and driver
+  local subsystem driver bus vendor model serial id_path vendormodel sysdev
   subsystem="$(get_prop "$props" SUBSYSTEM)"
-  [[ -n "$subsystem" ]] || subsystem="$(bn "$devdir/subsystem")"
+  if [[ -z "$subsystem" && -n "$devdir" && -e "$devdir/subsystem" ]]; then
+    subsystem="$(bn "$devdir/subsystem")"
+  fi
 
-  # Driver is on the *device* (not the class)
-  driver="$(bn "$devdir/device/driver")"
-  [[ "$driver" == "." ]] && driver=""  # normalize missing
+  driver="$(get_prop "$props" DRIVER)"
+  if [[ -z "$driver" && -n "$devdir" && -e "$devdir/device/driver" ]]; then
+    driver="$(bn "$devdir/device/driver")"
+  fi
 
-  # Determine bus: prefer ID_BUS from udev, else infer from ancestry
-  id_bus="$(get_prop "$props" ID_BUS)"
-  if [[ -z "$id_bus" ]]; then
-    # If any parent in the chain is on the usb bus, call it usb; else use the device's own bus if present
+  # Bus
+  bus="$(get_prop "$props" ID_BUS)"
+  if [[ -z "$bus" && -n "$devdir" ]]; then
     if [[ -e "$devdir/device/subsystem" ]]; then
-      devbus="$(bn "$devdir/device/subsystem")"
-    else
-      devbus=""
+      bus="$(bn "$devdir/device/subsystem")"
     fi
-    if [[ -z "$devbus" ]]; then
-      # heuristics via sysfs path
-      sysfs_path="$(udevadm info -q path --path="$devdir" 2>/dev/null || echo "")"
-      [[ "$sysfs_path" =~ /usb ]] && devbus="usb"
-    fi
-    bus="$devbus"
-  else
-    bus="$id_bus"
+    [[ -z "$bus" && "$devdir" =~ /usb/ ]] && bus="usb"
   fi
   [[ -n "$bus" ]] || bus="(n/a)"
 
+  # Identity
   vendor="$(get_prop "$props" ID_VENDOR_FROM_DATABASE)"
   [[ -n "$vendor" ]] || vendor="$(get_prop "$props" ID_VENDOR)"
   model="$(get_prop "$props" ID_MODEL_FROM_DATABASE)"
   [[ -n "$model" ]] || model="$(get_prop "$props" ID_MODEL)"
-
   serial="$(get_prop "$props" ID_SERIAL_SHORT)"
   [[ -n "$serial" ]] || serial="$(get_prop "$props" ID_SERIAL)"
-
   id_path="$(get_prop "$props" ID_PATH)"
 
   vendormodel=""
   if [[ -n "$vendor" || -n "$model" ]]; then
     vendormodel="${vendor:+$vendor}:${model:+$model}"
-    vendormodel="${vendormodel#:}"   # trim leading colon if vendor empty
-    vendormodel="${vendormodel%:}"   # trim trailing colon if model empty
+    vendormodel="${vendormodel#:}"
+    vendormodel="${vendormodel%:}"
+  else
+    vendormodel="-"
   fi
+  [[ -n "$serial" ]] || serial="-"
+  [[ -n "$id_path" ]] || id_path="-"
 
-  printf "%-28s %-14s %-14s %-10s %-20s %-24s %s\n" \
-    "$devnode" \
-    "${subsystem:-"(n/a)"}" \
-    "${driver:-"(n/a)"}" \
-    "$bus" \
-    "${vendormodel:-"-"}" \
-    "${serial:-"-"}" \
-    "${id_path:-"-"}"
+  printf "%-28s %-14s %-14s %-10s %-24s %-24s %s\n" \
+    "$devnode" "${subsystem:-"(n/a)"}" "${driver:-"(n/a)"}" "$bus" \
+    "$vendormodel" "$serial" "$id_path"
+}
 
-done < <(find /sys/class -mindepth 2 -maxdepth 2 -type f -name uevent -print0 | sort -z)
+declare -A printed=()
 
-# Hints: common filters you might want
-#   | grep -i usb
-#   | grep -E '/dev/(sd|mmcblk|tty|ttyUSB|ttyACM|i2c-|spidev|video|hidraw|input/event)'
+print_header
+
+# ===== Pass 1: sysfs class devices (FOLLOW SYMLINKS!) =====
+# -L is crucial; /sys/class/*/* are symlinks into /sys/devices/...
+while IFS= read -r -d '' uevent; do
+  devdir="$(dirname "$uevent")"
+  devname="$(grep -m1 '^DEVNAME=' "$uevent" | cut -d= -f2 || true)"
+  [[ -n "$devname" ]] || continue
+  devnode="/dev/$devname"
+  [[ -e "$devnode" ]] || continue
+  if [[ -z "${printed[$devnode]:-}" ]]; then
+    emit_row "$devnode" "$devdir"
+    printed[$devnode]=1
+  fi
+done < <(find -L /sys/class -mindepth 2 -maxdepth 2 -type f -name uevent -print0 2>/dev/null)
+
+# ===== Pass 2: sweep /dev/* as a safety net (e.g., some pseudo-devs that still have udev info) =====
+# Only include character/block devices, skip obvious pseudo/pts/shm.
+while IFS= read -r -d '' devnode; do
+  [[ -e "$devnode" ]] || continue
+  [[ -c "$devnode" || -b "$devnode" ]] || continue
+  case "$devnode" in
+    /dev/null|/dev/zero|/dev/random|/dev/urandom|/dev/tty|/dev/pts/*|/dev/shm/*) continue ;;
+  esac
+  [[ -z "${printed[$devnode]:-}" ]] || continue
+
+  # Try to get sysfs path to pass to emit_row (optional)
+  sys_path="$(udevadm info -q path --name="$devnode" 2>/dev/null || true)"
+  if [[ -n "$sys_path" && -e "$sys_path" ]]; then
+    emit_row "$devnode" "$sys_path"
+  else
+    emit_row "$devnode" ""
+  fi
+  printed[$devnode]=1
+done < <(find /dev -maxdepth 1 -type c -o -type b -print0 2>/dev/null)
+
+# Hints:
+#   ./list-devices.sh | grep -i usb
+#   ./list-devices.sh | grep -E '/dev/video|/dev/tty|/dev/sd|/dev/mmcblk'
