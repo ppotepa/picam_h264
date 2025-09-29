@@ -25,6 +25,7 @@ DEFAULT_RESOLUTION="1280x720"        # Default video resolution
 DEFAULT_FPS="30"                     # Default frame rate
 DEFAULT_BITRATE="4000000"            # Default bitrate in bits per second
 DEFAULT_CORNER="top-left"            # Default position for stats overlay
+DEFAULT_SOURCE="auto"                # Default camera source (auto-detect)
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -49,12 +50,14 @@ Options:
   -f, --fps <number>          Frame rate in frames per second (default: ${DEFAULT_FPS})
   -b, --bitrate <bits>        Target bitrate in bits per second (default: ${DEFAULT_BITRATE})
   -c, --corner <position>     Overlay corner: top-left, top-right, bottom-left, bottom-right (default: ${DEFAULT_CORNER})
+  -s, --source <device>       Camera source: auto, csi, or /dev/videoN (default: auto)
       --no-menu               Skip the interactive whiptail wizard
       --menu                  Force showing the wizard even if arguments are provided
       --check-deps            Only verify dependencies (no installation) and exit
       --install-deps          Install missing dependencies and exit
       --debug-cameras         Print a detailed camera detection report and exit
       --test-usb              Run a short USB camera capture test (requires ffmpeg) and exit
+      --list-cameras          List available cameras and exit
   -h, --help                  Show this help message and exit
 
 Examples:
@@ -231,6 +234,29 @@ detect_cameras() {
 
 # Get the best available camera type
 get_camera_type() {
+  # Handle explicit source selection
+  case "$SOURCE" in
+    csi)
+      echo "csi"
+      return
+      ;;
+    /dev/video*)
+      if [[ -c "$SOURCE" ]]; then
+        echo "usb"
+      else
+        echo "none"
+      fi
+      return
+      ;;
+    auto)
+      # Auto-detection logic (original behavior)
+      ;;
+    *)
+      die "Invalid source: '$SOURCE'. Use 'auto', 'csi', or '/dev/videoN'"
+      ;;
+  esac
+
+  # Auto-detection when SOURCE=auto
   local detection
   detection=$(detect_cameras)
   eval "$detection"
@@ -429,7 +455,7 @@ parse_resolution() {
 
 parse_arguments() {
   local parsed
-  parsed=$(getopt -o m:r:f:b:c:h --long method:,resolution:,fps:,bitrate:,corner:,help,menu,no-menu,check-deps,install-deps,debug-cameras,test-usb -- "$@") || {
+  parsed=$(getopt -o m:r:f:b:c:s:h --long method:,resolution:,fps:,bitrate:,corner:,source:,help,menu,no-menu,check-deps,install-deps,debug-cameras,test-usb,list-cameras -- "$@") || {
     usage
     exit 1
   }
@@ -457,6 +483,10 @@ parse_arguments() {
         OVERLAY_CORNER="$2"
         shift 2
         ;;
+      -s|--source)
+        SOURCE="$2"
+        shift 2
+        ;;
       --menu)
         FORCE_MENU=1
         shift
@@ -479,6 +509,10 @@ parse_arguments() {
         ;;
       --test-usb)
         USB_TEST_ONLY=1
+        shift
+        ;;
+      --list-cameras)
+        LIST_CAMERAS_ONLY=1
         shift
         ;;
       -h|--help)
@@ -557,6 +591,48 @@ show_whiptail_wizard() {
     "bottom-right" "Bottom right corner" \
     3>&1 1>&2 2>&3) || exit 1
   OVERLAY_CORNER="$corner_choice"
+
+  # Camera source selection
+  local source_options=()
+  source_options+=("auto" "Auto-detect (CSI preferred)")
+  
+  # Check for CSI camera
+  if "$(get_camera_command)" --list-cameras --timeout 1000 2>/dev/null | grep -q "Available cameras"; then
+    source_options+=("csi" "CSI Camera (ribbon cable)")
+  fi
+  
+  # Check for USB cameras
+  if ls /dev/video* >/dev/null 2>&1; then
+    local device
+    for device in /dev/video*; do
+      [[ -c "$device" ]] || continue
+      
+      # Skip Pi's internal video processing devices
+      if command -v v4l2-ctl >/dev/null 2>&1; then
+        local driver_info
+        driver_info=$(v4l2-ctl --device="$device" --info 2>/dev/null || true)
+        if echo "$driver_info" | grep -q "bcm2835\|codec\|isp"; then
+          continue
+        fi
+        
+        if echo "$driver_info" | grep -q "uvcvideo\|usb"; then
+          local card_name
+          card_name=$(echo "$driver_info" | grep "Card type" | cut -d: -f2 | xargs)
+          source_options+=("$device" "USB: ${card_name:-Unknown}")
+        fi
+      else
+        source_options+=("$device" "USB Camera")
+      fi
+    done
+  fi
+
+  if [[ ${#source_options[@]} -gt 2 ]]; then
+    local source_choice
+    source_choice=$(whiptail --title "Camera Source" --menu "Select camera source" 20 78 10 \
+      "${source_options[@]}" \
+      3>&1 1>&2 2>&3) || exit 1
+    SOURCE="$source_choice"
+  fi
 }
 
 # Calculate overlay position coordinates for ffmpeg drawtext filter
@@ -704,6 +780,64 @@ monitor_metrics() {
 # =============================================================================
 # DIAGNOSTIC AND TESTING FUNCTIONS
 # =============================================================================
+
+# List available cameras in a user-friendly format
+list_available_cameras() {
+  echo "=== Available Cameras ==="
+  echo
+  
+  # Check for CSI camera
+  local camera_cmd
+  camera_cmd=$(get_camera_command)
+  echo "Checking for CSI camera..."
+  if "$camera_cmd" --list-cameras --timeout 1000 2>/dev/null | grep -q "Available cameras"; then
+    echo "✓ CSI Camera detected (use: --source csi)"
+    "$camera_cmd" --list-cameras --timeout 1000 2>/dev/null | head -10
+  else
+    echo "✗ No CSI camera detected"
+  fi
+  echo
+  
+  # Check for USB cameras
+  echo "Checking for USB cameras..."
+  local found_usb=0
+  if ls /dev/video* >/dev/null 2>&1; then
+    local device
+    for device in /dev/video*; do
+      [[ -c "$device" ]] || continue
+      
+      # Skip non-capture devices (bcm2835 codec devices)
+      local driver_info
+      if command -v v4l2-ctl >/dev/null 2>&1; then
+        driver_info=$(v4l2-ctl --device="$device" --info 2>/dev/null || true)
+        if echo "$driver_info" | grep -q "bcm2835\|codec\|isp"; then
+          continue  # Skip Pi's internal video processing devices
+        fi
+        
+        if echo "$driver_info" | grep -q "uvcvideo\|usb"; then
+          echo "✓ USB Camera: $device (use: --source $device)"
+          echo "$driver_info" | head -3 | sed 's/^/  /'
+          found_usb=1
+          echo
+        fi
+      else
+        # Fallback without v4l2-ctl
+        echo "? Possible USB Camera: $device (use: --source $device)"
+        found_usb=1
+      fi
+    done
+  fi
+  
+  if [[ $found_usb -eq 0 ]]; then
+    echo "✗ No USB cameras detected"
+  fi
+  
+  echo
+  echo "Usage examples:"
+  echo "  $0 --source auto        # Auto-detect (CSI preferred)"
+  echo "  $0 --source csi         # Force CSI camera"
+  echo "  $0 --source /dev/video0 # Force specific USB camera"
+}
 
 # Generate comprehensive camera detection report for troubleshooting
 # Shows detailed information about available cameras and their capabilities
@@ -977,12 +1111,23 @@ run_usb_h264_sdl_preview() {
   width="$WIDTH"   # Parsed video width
   height="$HEIGHT" # Parsed video height
 
-  local detection usb_device
-  detection=$(detect_cameras)
-  eval "$detection"
+  local usb_device
   
-  if [[ "$usb_available" -ne 1 ]]; then
-    die "No USB camera found"
+  # Use explicit device if specified, otherwise auto-detect
+  if [[ "$SOURCE" =~ ^/dev/video[0-9]+$ ]]; then
+    usb_device="$SOURCE"
+    if [[ ! -c "$usb_device" ]]; then
+      die "Specified USB camera device not found: $usb_device"
+    fi
+  else
+    # Auto-detect USB camera
+    local detection
+    detection=$(detect_cameras)
+    eval "$detection"
+    
+    if [[ "$usb_available" -ne 1 ]]; then
+      die "No USB camera found"
+    fi
   fi
 
   local video_fifo stats_file ffmpeg_log font_path overlay_x overlay_y
@@ -1090,12 +1235,14 @@ main() {
   FPS="$DEFAULT_FPS"                 # Frame rate
   BITRATE="$DEFAULT_BITRATE"         # Target bitrate
   OVERLAY_CORNER="$DEFAULT_CORNER"   # Stats overlay position
+  SOURCE="$DEFAULT_SOURCE"           # Camera source
   SKIP_MENU=0                       # Skip interactive menu flag
   FORCE_MENU=0                      # Force menu display flag
   CHECK_DEPS_ONLY=0                 # Only check dependencies flag
   INSTALL_DEPS_ONLY=0               # Only install dependencies flag
   DEBUG_CAMERAS_ONLY=0              # Only show camera debug info flag
   USB_TEST_ONLY=0                   # Only run USB camera test flag
+  LIST_CAMERAS_ONLY=0               # Only list cameras flag
 
   local original_argc=$#
   local show_menu=0
@@ -1124,6 +1271,16 @@ main() {
     else
       exit 1
     fi
+  fi
+
+  if (( LIST_CAMERAS_ONLY )); then
+    list_available_cameras
+    exit 0
+  fi
+
+  if (( LIST_CAMERAS_ONLY )); then
+    list_available_cameras
+    exit 0
   fi
 
   if (( CHECK_DEPS_ONLY )); then
