@@ -197,16 +197,29 @@ static void safe_mkfifo(const char *path)
 
 // signal handling / cleanup
 static ctx_t *g_ctx = NULL;
+static int g_signal_count = 0;
 static void terminate_children(int sig)
 {
     (void)sig;
-    if (!g_ctx)
-        exit(0);
-    g_ctx->running = 0;
-    if (g_ctx->cam_pid > 0)
-        kill(g_ctx->cam_pid, SIGTERM);
-    if (g_ctx->prev_pid > 0)
-        kill(g_ctx->prev_pid, SIGTERM);
+    g_signal_count++;
+    
+    if (g_signal_count == 1) {
+        LOG_INFO("Received signal, shutting down gracefully...");
+        if (g_ctx) {
+            g_ctx->running = 0;
+            if (g_ctx->cam_pid > 0) {
+                LOG_DEBUG("Terminating camera process (PID: %d)", g_ctx->cam_pid);
+                kill(g_ctx->cam_pid, SIGTERM);
+            }
+            if (g_ctx->prev_pid > 0) {
+                LOG_DEBUG("Terminating preview process (PID: %d)", g_ctx->prev_pid);
+                kill(g_ctx->prev_pid, SIGTERM);
+            }
+        }
+    } else if (g_signal_count >= 3) {
+        LOG_ERROR("Received %d signals, hard exiting", g_signal_count);
+        exit(1);
+    }
 }
 static void install_sighandlers(void)
 {
@@ -750,7 +763,7 @@ static void start_csi_camera(ctx_t *ctx, const cfg_t *cfg)
 
 static void start_usb_ffmpeg(ctx_t *ctx, const cfg_t *cfg, const char *devnode, fmt_support_t fs, encode_t enc)
 {
-    // Decide input_format and encoder
+    // Decide input_format and encoder with fallback for problematic cameras
     const char *infmt = NULL;
     if (fs.h264)
         infmt = "h264";
@@ -759,7 +772,9 @@ static void start_usb_ffmpeg(ctx_t *ctx, const cfg_t *cfg, const char *devnode, 
     else if (fs.yuyv)
         infmt = "yuyv422";
     else
-        infmt = "mjpeg";
+        infmt = "mjpeg";  // Default fallback
+    
+    LOG_DEBUG("Using input format: %s for device: %s", infmt, devnode);
 
     char sz[32], fr[16], br[32], duration_str[16];
     snprintf(sz, sizeof(sz), "%dx%d", cfg->width, cfg->height);
@@ -773,6 +788,7 @@ static void start_usb_ffmpeg(ctx_t *ctx, const cfg_t *cfg, const char *devnode, 
     char *argv[MAXARGS];
     int ac = 0;
     argv[ac++] = "ffmpeg";
+    argv[ac++] = "-y";  // Auto-overwrite files
     argv[ac++] = "-hide_banner";
     argv[ac++] = "-loglevel";
     argv[ac++] = "error";
@@ -803,6 +819,11 @@ static void start_usb_ffmpeg(ctx_t *ctx, const cfg_t *cfg, const char *devnode, 
     }
     else if (enc == ENC_HARDWARE)
     {
+        // Add error detection for problematic streams
+        if (strcmp(infmt, "mjpeg") == 0) {
+            argv[ac++] = "-err_detect";
+            argv[ac++] = "ignore_err";
+        }
         argv[ac++] = "-pix_fmt";
         argv[ac++] = "nv12";
         argv[ac++] = "-c:v";
@@ -816,6 +837,11 @@ static void start_usb_ffmpeg(ctx_t *ctx, const cfg_t *cfg, const char *devnode, 
     }
     else
     {
+        // Add error detection for problematic streams
+        if (strcmp(infmt, "mjpeg") == 0) {
+            argv[ac++] = "-err_detect";
+            argv[ac++] = "ignore_err";
+        }
         argv[ac++] = "-c:v";
         argv[ac++] = "libx264";
         argv[ac++] = "-preset";
