@@ -71,11 +71,29 @@ run_command() {
   local cmd="$1"
   echo
   echo "========================================"
-  echo "Executing: $cmd"
+  echo "[$(date '+%H:%M:%S')] Executing: $cmd"
   echo "========================================"
   echo
+  
+  # Log to file if LOG_FILE env var is set
+  if [[ -n "${LOG_FILE:-}" ]]; then
+    echo "[$(date '+%H:%M:%S')] Menu executed: $cmd" >> "$LOG_FILE"
+  fi
+  
   # shellcheck disable=SC2086
   eval "$cmd"
+  local exit_code=$?
+  
+  echo
+  echo "========================================"
+  echo "[$(date '+%H:%M:%S')] Command completed with exit code: $exit_code"
+  echo "========================================"
+  
+  if [[ -n "${LOG_FILE:-}" ]]; then
+    echo "[$(date '+%H:%M:%S')] Command completed with exit code: $exit_code" >> "$LOG_FILE"
+  fi
+  
+  return $exit_code
 }
 
 while true; do

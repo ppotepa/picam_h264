@@ -35,10 +35,43 @@ DEFAULT_ENCODE="auto"                # Default encoding method (auto-detect)
 
 SCRIPT_NAME=$(basename "$0")
 
+# Logging system
+LOG_LEVEL=${LOG_LEVEL:-1}  # 0=ERROR, 1=INFO, 2=DEBUG
+LOG_FILE=""                # Set via --log-file or LOG_FILE env var
+
+# Logging functions with timestamps
+log_timestamp() {
+  date '+%H:%M:%S.%3N' 2>/dev/null || date '+%H:%M:%S'
+}
+
+log_msg() {
+  local level="$1"
+  local level_num="$2"
+  shift 2
+  
+  if [[ "$level_num" -gt "$LOG_LEVEL" ]]; then
+    return
+  fi
+  
+  local timestamp
+  timestamp=$(log_timestamp)
+  local output="[${timestamp}] ${level}: $*"
+  
+  if [[ -n "$LOG_FILE" ]]; then
+    echo "$output" >> "$LOG_FILE"
+  else
+    echo "$output" >&2
+  fi
+}
+
+log_error() { log_msg "ERROR" 0 "$@"; }
+log_info()  { log_msg "INFO " 1 "$@"; }
+log_debug() { log_msg "DEBUG" 2 "$@"; }
+
 # Error handling function - prints error message and exits
 die() {
   local msg="$1"
-  echo "${SCRIPT_NAME}: ${msg}" >&2
+  log_error "${msg}"
   exit 1
 }
 
@@ -56,6 +89,9 @@ Options:
   -e, --encode <method>       Encoding method: auto, software, hardware (default: auto)
   -d, --duration <seconds>    Recording duration in seconds (default: ${DEFAULT_DURATION}, 0 = infinite)
       --fb0, --framebuffer    Output to framebuffer /dev/fb0 instead of SDL window
+  -v, --verbose               Increase logging verbosity (can be repeated)
+      --quiet                 Only show error messages
+      --log-file <path>       Write logs to file instead of stderr
       --no-menu               Skip the interactive whiptail wizard
       --no-overlay            Skip performance overlay (for low-end CPUs)
       --menu                  Force showing the wizard even if arguments are provided
@@ -272,11 +308,13 @@ select_usb_capture_device() {
 # Detects both CSI (ribbon cable) and USB cameras
 # Returns shell variables: csi_available, usb_available, usb_device
 detect_cameras() {
+  log_debug "Starting camera detection..."
   local csi_available=0
   local usb_available=0
   local usb_device=""
 
   # CSI (avoid counting USB seen by libcamera)
+  log_debug "Checking for CSI camera using command: $(get_camera_command)"
   if command -v "$(get_camera_command)" >/dev/null 2>&1; then
     local camera_output
     camera_output=$("$(get_camera_command)" --list-cameras 2>&1 || true)
@@ -290,6 +328,7 @@ detect_cameras() {
   fi
 
   # USB (uvcvideo + Video Capture)
+  log_debug "Checking for USB cameras in /dev/video*"
   if ls /dev/video* >/dev/null 2>&1; then
     local dev
     dev=$(select_usb_capture_device || true)
@@ -347,6 +386,7 @@ get_camera_type() {
 # Check if Pi's hardware H.264 encoder is available
 # Returns 0 if hardware encoder available, 1 otherwise
 detect_hardware_encoder() {
+  log_debug "Checking for hardware H.264 encoder at /dev/video11"
   # Check if Pi's hardware encoder is available
   if [[ -c "/dev/video11" ]] && command -v v4l2-ctl >/dev/null 2>&1; then
     local encoder_info
@@ -360,6 +400,7 @@ detect_hardware_encoder() {
 
 # Get the encoding method to use based on user preference and availability
 get_encoding_method() {
+  log_debug "Determining encoding method for ENCODE=$ENCODE"
   case "$ENCODE" in
     software)
       echo "software"
@@ -444,6 +485,8 @@ apt_update_and_install() {
 
 check_dependencies() {
   local require_whiptail="$1"
+  
+  log_info "Checking dependencies (whiptail required: $require_whiptail)..."
 
   local required_commands=()
   local optional_commands=()
@@ -508,6 +551,8 @@ check_dependencies() {
 
 attempt_dependency_install() {
   local require_whiptail="$1"
+  
+  log_info "Attempting to install missing dependencies..."
 
   local packages=()
   local missing_without_pkg=()
@@ -570,7 +615,7 @@ parse_resolution() {
 
 parse_arguments() {
   local parsed
-  parsed=$(getopt -o m:r:f:b:c:s:e:d:h --long method:,resolution:,fps:,bitrate:,corner:,source:,encode:,duration:,help,menu,no-menu,no-overlay,check-deps,install-deps,debug-cameras,test-usb,list-cameras,fb0,framebuffer -- "$@") || {
+  parsed=$(getopt -o m:r:f:b:c:s:e:d:vh --long method:,resolution:,fps:,bitrate:,corner:,source:,encode:,duration:,verbose,quiet,log-file:,help,menu,no-menu,no-overlay,check-deps,install-deps,debug-cameras,test-usb,list-cameras,fb0,framebuffer -- "$@") || {
     usage
     exit 1
   }
@@ -613,6 +658,18 @@ parse_arguments() {
       --fb0|--framebuffer)
         USE_FRAMEBUFFER=1
         shift
+        ;;
+      -v|--verbose)
+        ((LOG_LEVEL++))
+        shift
+        ;;
+      --quiet)
+        LOG_LEVEL=0
+        shift
+        ;;
+      --log-file)
+        LOG_FILE="$2"
+        shift 2
         ;;
       --menu)
         FORCE_MENU=1
@@ -1194,6 +1251,7 @@ run_usb_camera_test() {
 # Main capture pipeline for CSI cameras using libcamera/rpicam tools
 # Creates: Camera -> H.264 encoder -> FIFO -> ffmpeg -> SDL display with stats overlay
 run_h264_sdl_preview() {
+  log_info "Starting CSI camera H.264 preview pipeline"
   parse_resolution "$RESOLUTION"
   local width="$WIDTH"     # Parsed video width
   local height="$HEIGHT"   # Parsed video height  
@@ -1278,20 +1336,24 @@ run_h264_sdl_preview() {
     timeout_ms=$((DURATION * 1000))
   fi
 
+  log_info "Starting CSI camera: $(get_camera_command) ${width}x${height}@${fps}fps, bitrate=${bitrate}, timeout=${timeout_ms}ms"
   stdbuf -oL "$(get_camera_command)" --inline --codec h264 --timeout "$timeout_ms" \
     --width "$width" --height "$height" --framerate "$fps" \
     --bitrate "$bitrate" -o - > "$video_fifo" &
   camera_pid=$!
+  log_debug "CSI camera process started with PID: $camera_pid"
 
   if [[ "$NO_OVERLAY" -eq 0 ]]; then
     monitor_metrics "$stats_file" "$ffmpeg_log" "$width" "$height" "$bitrate" "$fps" "$camera_pid" "$ffmpeg_pid" &
     monitor_pid=$!
   fi
 
+  log_info "Waiting for pipeline processes to complete..."
   wait "$camera_pid" 2>/dev/null || true
   wait "$ffmpeg_pid" 2>/dev/null || true
   wait "$monitor_pid" 2>/dev/null || true
 
+  log_info "CSI camera pipeline completed successfully"
   trap - EXIT INT TERM
   cleanup_pipeline
 }
@@ -1299,6 +1361,7 @@ run_h264_sdl_preview() {
 # USB camera capture pipeline using ffmpeg for both capture and display
 # Creates: USB Camera -> ffmpeg capture -> H.264 -> FIFO -> ffmpeg display with stats
 run_usb_h264_sdl_preview() {
+  log_info "Starting USB camera H.264 preview pipeline"
   local width height
   parse_resolution "$RESOLUTION"
   width="$WIDTH"   # Parsed video width
@@ -1444,12 +1507,14 @@ run_usb_h264_sdl_preview() {
     monitor_pid=$!
   fi
 
+  log_info "Waiting for USB camera pipeline processes to complete..."
   wait "$camera_pid" 2>/dev/null || true
   wait "$ffmpeg_pid" 2>/dev/null || true
   if [[ "$NO_OVERLAY" -eq 0 ]]; then
     wait "$monitor_pid" 2>/dev/null || true
   fi
 
+  log_info "USB camera pipeline completed successfully"
   trap - EXIT INT TERM
   cleanup_pipeline
 }
@@ -1487,6 +1552,10 @@ start_capture() {
 # Script entry point - orchestrates the entire execution flow
 # Handles argument parsing, dependency checking, and dispatches to appropriate functions
 main() {
+  # Initialize logging from environment
+  LOG_LEVEL=${LOG_LEVEL:-1}
+  LOG_FILE=${LOG_FILE:-""}
+  
   # Initialize global variables with default values
   METHOD="$DEFAULT_METHOD"           # Capture method to use
   RESOLUTION="$DEFAULT_RESOLUTION"   # Video resolution
@@ -1511,6 +1580,14 @@ main() {
   local require_whiptail=0
 
   parse_arguments "$@"
+  
+  # Initialize logging after parsing arguments
+  if [[ -n "$LOG_FILE" ]]; then
+    log_info "Logging to file: $LOG_FILE"
+  fi
+  
+  log_info "${SCRIPT_NAME} starting with config: ${RESOLUTION}@${FPS}fps, bitrate=${BITRATE}, source=${SOURCE}, encode=${ENCODE}, duration=${DURATION}s"
+  log_debug "Method: ${METHOD}, Corner: ${OVERLAY_CORNER}, Framebuffer: ${USE_FRAMEBUFFER}"
 
   if [[ "$SKIP_MENU" -eq 0 ]]; then
     if [[ "$FORCE_MENU" -eq 1 || ( "$original_argc" -eq 0 && -t 0 && -t 1 ) ]]; then
