@@ -1,14 +1,38 @@
 #!/usr/bin/env bash
+# =============================================================================
+# PiCam H.264 Benchmarking Script
+# =============================================================================
+# A comprehensive camera benchmarking tool for Raspberry Pi that supports both
+# CSI (ribbon cable) cameras and USB webcams. Creates a video capture pipeline
+# with real-time performance overlay showing FPS, bitrate, and system metrics.
+#
+# Features:
+# - Auto-detection of CSI and USB cameras
+# - Interactive menu and CLI interface
+# - Real-time performance monitoring
+# - Automatic dependency management
+# - Support for both libcamera-vid and rpicam-vid
+# =============================================================================
+
 set -euo pipefail
 
-# Default configuration values
-DEFAULT_METHOD="h264_sdl_preview"
-DEFAULT_RESOLUTION="1280x720"
-DEFAULT_FPS="30"
-DEFAULT_BITRATE="4000000"
-DEFAULT_CORNER="top-left"
+# =============================================================================
+# DEFAULT CONFIGURATION VALUES
+# =============================================================================
+# These values are used when no arguments are provided or as fallbacks
+DEFAULT_METHOD="h264_sdl_preview"    # Default capture method
+DEFAULT_RESOLUTION="1280x720"        # Default video resolution
+DEFAULT_FPS="30"                     # Default frame rate
+DEFAULT_BITRATE="4000000"            # Default bitrate in bits per second
+DEFAULT_CORNER="top-left"            # Default position for stats overlay
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
 
 SCRIPT_NAME=$(basename "$0")
+
+# Error handling function - prints error message and exits
 die() {
   local msg="$1"
   echo "${SCRIPT_NAME}: ${msg}" >&2
@@ -40,11 +64,15 @@ Examples:
 USAGE
 }
 
+# Font detection function for overlay text rendering
+# Uses name reference to return the found font path
+# Searches common system font locations and falls back to any available TTF
 find_font_path() {
   local -n result=$1
   result=""
   
   # Common font paths to check (in order of preference)
+  # DejaVu fonts are standard on most Raspberry Pi OS installations
   local font_paths=(
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -71,28 +99,35 @@ find_font_path() {
   fi
 }
 
+# =============================================================================
+# DEPENDENCY MANAGEMENT
+# =============================================================================
+
+# Core commands required for basic functionality
 REQUIRED_COMMANDS_BASE=(
-  libcamera-vid
-  ffmpeg
-  awk
-  ps
-  stdbuf
+  libcamera-vid    # Camera capture (older Raspberry Pi OS)
+  ffmpeg          # Video processing and display
+  awk             # Text processing for stats
+  ps              # Process monitoring
+  stdbuf          # Buffering control for real-time output
 )
 
+# Optional commands that enhance functionality but aren't critical
 OPTIONAL_COMMANDS_BASE=(
-  whiptail
-  v4l2-ctl
+  whiptail        # Interactive menu interface
+  v4l2-ctl        # USB camera diagnostics and format detection
 )
 
+# Mapping of commands to their package names for automatic installation
 declare -A COMMAND_PACKAGES=(
-  [libcamera-vid]="libcamera-apps"
-  [rpicam-vid]="libcamera-apps"
-  [ffmpeg]="ffmpeg"
-  [awk]="gawk"
-  [ps]="procps"
-  [stdbuf]="coreutils"
-  [whiptail]="whiptail"
-  [v4l2-ctl]="v4l-utils"
+  [libcamera-vid]="libcamera-apps"   # Raspberry Pi camera tools
+  [rpicam-vid]="libcamera-apps"      # Newer name for camera tools
+  [ffmpeg]="ffmpeg"                  # Video processing suite
+  [awk]="gawk"                       # GNU awk implementation
+  [ps]="procps"                      # Process utilities
+  [stdbuf]="coreutils"               # Core utilities
+  [whiptail]="whiptail"               # Dialog boxes for shell scripts
+  [v4l2-ctl]="v4l-utils"             # Video4Linux utilities
 )
 
 declare -a MISSING_REQUIRED_COMMANDS=()
@@ -119,6 +154,12 @@ build_optional_commands() {
   done
 }
 
+# =============================================================================
+# CAMERA DETECTION AND COMPATIBILITY
+# =============================================================================
+
+# Check if any camera command is available (handles OS version differences)
+# Returns 0 if camera tools are available, 1 otherwise
 check_camera_command() {
   if command -v libcamera-vid >/dev/null 2>&1; then
     return 0
@@ -129,7 +170,8 @@ check_camera_command() {
   return 1
 }
 
-# Get the correct camera command (libcamera-vid or rpicam-vid)
+# Get the correct camera command for this OS version
+# Raspberry Pi OS Bookworm renamed libcamera-vid to rpicam-vid
 get_camera_command() {
   if command -v libcamera-vid >/dev/null 2>&1; then
     echo "libcamera-vid"
@@ -140,11 +182,13 @@ get_camera_command() {
   fi
 }
 
-# Detect available cameras
+# Comprehensive camera detection function
+# Detects both CSI (ribbon cable) and USB cameras
+# Returns shell variables: csi_available, usb_available, usb_device
 detect_cameras() {
-  local csi_available=0
-  local usb_available=0
-  local usb_device=""
+  local csi_available=0    # 1 if CSI camera detected
+  local usb_available=0    # 1 if USB camera detected  
+  local usb_device=""       # Path to USB camera device
   
   # Check for CSI camera using libcamera - more robust detection
   if command -v "$(get_camera_command)" >/dev/null 2>&1; then
@@ -477,8 +521,14 @@ validate_configuration() {
   validate_corner "$OVERLAY_CORNER"
 }
 
+# =============================================================================
+# USER INTERFACE FUNCTIONS
+# =============================================================================
+
+# Interactive menu system using whiptail for user-friendly configuration
 show_whiptail_wizard() {
   local menu_choice
+  # Display method selection menu with whiptail
   menu_choice=$(whiptail --title "PiCam Benchmark" --menu "Select capture method" 20 78 10 \
     "h264_sdl_preview" "Camera -> H264 -> ffmpeg SDL preview" \
     3>&1 1>&2 2>&3) || exit 1
@@ -509,12 +559,14 @@ show_whiptail_wizard() {
   OVERLAY_CORNER="$corner_choice"
 }
 
+# Calculate overlay position coordinates for ffmpeg drawtext filter
+# Uses ffmpeg's text positioning expressions (w=width, h=height, tw=text width, th=text height)
 compute_overlay_position() {
-  local corner="$1"
-  local width="$2"
-  local height="$3"
-  local -n x_result="$4"
-  local -n y_result="$5"
+  local corner="$1"      # Corner position (top-left, etc.)
+  local width="$2"       # Video width (currently unused but for future enhancements)
+  local height="$3"      # Video height (currently unused but for future enhancements) 
+  local -n x_result="$4" # X coordinate result (by reference)
+  local -n y_result="$5" # Y coordinate result (by reference)
   
   case "$corner" in
     top-left)
@@ -587,25 +639,30 @@ any_pid_alive() {
 format_resource_usage() {
   local pids=()
   local pid
+  # Collect valid PIDs from arguments
   for pid in "$@"; do
     [[ -n "$pid" ]] && pids+=("$pid")
   done
+  # Return zeros if no valid PIDs provided
   if [[ ${#pids[@]} -eq 0 ]]; then
     echo "0.0 0.0"
     return
   fi
+  # Use ps and awk to sum CPU and memory usage across all processes
   ps -p "${pids[@]}" -o %cpu=,%mem= 2>/dev/null | \
     awk 'BEGIN{cpu=0; mem=0} {cpu+=$1; mem+=$2} END{printf "%.1f %.1f\n", cpu, mem}'
 }
 
+# Main monitoring loop that continuously updates performance statistics
+# Writes metrics to a file that ffmpeg reads for the overlay display
 monitor_metrics() {
-  local stats_file="$1"
-  local ffmpeg_log="$2"
-  local width="$3"
-  local height="$4"
-  local bitrate_target="$5"
-  local fps_target="$6"
-  shift 6
+  local stats_file="$1"      # File where stats are written for ffmpeg overlay
+  local ffmpeg_log="$2"     # FFmpeg log file to parse for actual metrics
+  local width="$3"          # Video width for display
+  local height="$4"         # Video height for display
+  local bitrate_target="$5" # Target bitrate for comparison
+  local fps_target="$6"     # Target FPS for comparison
+  shift 6                    # Remove processed arguments, leaving PIDs
   local pids=("$@")
 
   local fps_value="$fps_target"
@@ -644,6 +701,12 @@ monitor_metrics() {
   done
 }
 
+# =============================================================================
+# DIAGNOSTIC AND TESTING FUNCTIONS
+# =============================================================================
+
+# Generate comprehensive camera detection report for troubleshooting
+# Shows detailed information about available cameras and their capabilities
 run_camera_debug_report() {
   local camera_cmd
   camera_cmd=$(get_camera_command)
@@ -718,9 +781,12 @@ run_camera_debug_report() {
   echo "Selected camera type: $(get_camera_type)"
 }
 
+# USB camera testing function with format auto-detection
+# Performs a 5-second capture test to verify USB camera functionality
 run_usb_camera_test() {
   echo "=== USB camera diagnostic ==="
 
+  # List available video devices for diagnostic purposes
   ls -la /dev/video* 2>/dev/null || echo "No /dev/video* entries found."
   echo
 
@@ -820,12 +886,18 @@ run_usb_camera_test() {
   fi
 }
 
+# =============================================================================
+# CAPTURE PIPELINE FUNCTIONS
+# =============================================================================
+
+# Main capture pipeline for CSI cameras using libcamera/rpicam tools
+# Creates: Camera -> H.264 encoder -> FIFO -> ffmpeg -> SDL display with stats overlay
 run_h264_sdl_preview() {
   parse_resolution "$RESOLUTION"
-  local width="$WIDTH"
-  local height="$HEIGHT"
-  local fps="$FPS"
-  local bitrate="$BITRATE"
+  local width="$WIDTH"     # Parsed video width
+  local height="$HEIGHT"   # Parsed video height  
+  local fps="$FPS"         # Frame rate
+  local bitrate="$BITRATE" # Target bitrate
 
   overlay_position "$OVERLAY_CORNER"
   local overlay_x="$OVERLAY_X"
@@ -897,11 +969,13 @@ run_h264_sdl_preview() {
   cleanup_pipeline
 }
 
+# USB camera capture pipeline using ffmpeg for both capture and display
+# Creates: USB Camera -> ffmpeg capture -> H.264 -> FIFO -> ffmpeg display with stats
 run_usb_h264_sdl_preview() {
   local width height
   parse_resolution "$RESOLUTION"
-  width="$WIDTH"
-  height="$HEIGHT"
+  width="$WIDTH"   # Parsed video width
+  height="$HEIGHT" # Parsed video height
 
   local detection usb_device
   detection=$(detect_cameras)
@@ -999,18 +1073,29 @@ start_capture() {
   esac
 }
 
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
+# Script entry point - orchestrates the entire execution flow
+# Handles argument parsing, dependency checking, and dispatches to appropriate functions
 main() {
-  METHOD="$DEFAULT_METHOD"
-  RESOLUTION="$DEFAULT_RESOLUTION"
-  FPS="$DEFAULT_FPS"
-  BITRATE="$DEFAULT_BITRATE"
-  OVERLAY_CORNER="$DEFAULT_CORNER"
-  SKIP_MENU=0
-  FORCE_MENU=0
-  CHECK_DEPS_ONLY=0
-  INSTALL_DEPS_ONLY=0
-  DEBUG_CAMERAS_ONLY=0
-  USB_TEST_ONLY=0
+  # Initialize global variables with default values
+  METHOD="$DEFAULT_METHOD"           # Capture method to use
+  RESOLUTION="$DEFAULT_RESOLUTION"   # Video resolution
+  FPS="$DEFAULT_FPS"                 # Frame rate
+  BITRATE="$DEFAULT_BITRATE"         # Target bitrate
+  OVERLAY_CORNER="$DEFAULT_CORNER"   # Stats overlay position
+  SKIP_MENU=0                       # Skip interactive menu flag
+  FORCE_MENU=0                      # Force menu display flag
+  CHECK_DEPS_ONLY=0                 # Only check dependencies flag
+  INSTALL_DEPS_ONLY=0               # Only install dependencies flag
+  DEBUG_CAMERAS_ONLY=0              # Only show camera debug info flag
+  USB_TEST_ONLY=0                   # Only run USB camera test flag
 
   local original_argc=$#
   local show_menu=0
@@ -1069,5 +1154,20 @@ main() {
   start_capture
 }
 
+# =============================================================================
+# SCRIPT EXECUTION
+# =============================================================================
+
+# Execute main function with all command line arguments
+# =============================================================================
+# SCRIPT EXECUTION
+# =============================================================================
+
+# Execute main function with all command line arguments
+# =============================================================================
+# SCRIPT EXECUTION
+# =============================================================================
+
+# Execute main function with all command line arguments
 main "$@"
 
