@@ -7,10 +7,10 @@
 // Runtime: requires ffmpeg, rpicam-vid or libcamera-vid, and (optionally) v4l2-ctl
 // License: MIT
 
-#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
+#include <limits.h>
 #include <linux/videodev2.h>
 #include <pthread.h>
 #include <signal.h>
@@ -183,9 +183,6 @@ static int read_proc_pid_stat(pid_t pid, unsigned long long *utime, unsigned lon
         return -1;
     // stat has many fields; 14=utime, 15=stime
     // we need to handle comm with spaces in parentheses
-    int i;
-    char c;
-    // skip pid and comm and state
     // read entire line
     char line[4096];
     size_t n = fread(line, 1, sizeof(line) - 1, f);
@@ -200,7 +197,6 @@ static int read_proc_pid_stat(pid_t pid, unsigned long long *utime, unsigned lon
     // fields start from #4 now, we need fields 14 & 15 -> indexes 14-3=11 and 15-3=12 from p
     // we'll sscanf many fields
     unsigned long long _ut = 0, _st = 0;
-    long rss_pages = 0; // field 24 is rss in pages
     // We'll parse up to rss
     // Format: ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt utime stime ...
     // We'll scan 11 values to reach utime (field 14)
