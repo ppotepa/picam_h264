@@ -476,11 +476,7 @@ static void *ffmpeg_log_reader(void *arg)
             char c = buf[i];
             if (c == '\r' || c == '\n')
             {
-                if (len == 0)
-                    continue;
                 line[len] = 0;
-                fprintf(stderr, "[preview] %s\n", line);
-                fflush(stderr);
                 // parse "fps=xx" and "bitrate=xxx"
                 char *fps = strstr(line, "fps=");
                 char *br = strstr(line, "bitrate=");
@@ -620,8 +616,6 @@ static void start_csi_camera(ctx_t *ctx, int width, int height, int fps, int bit
     snprintf(fr, sizeof(fr), "%d", fps);
     snprintf(br, sizeof(br), "%d", bitrate);
 
-    fprintf(stderr, "[picam] Starting %s %dx%d@%dfps bitrate=%d\n", cmd, width, height, fps, bitrate);
-
     char *const argv[] = {
         (char *)cmd,
         "--inline", "--codec", "h264", "--timeout", "0",
@@ -655,15 +649,12 @@ static void start_usb_ffmpeg(ctx_t *ctx, const char *devnode, fmt_support_t fs, 
 // Common head:
 // ffmpeg -hide_banner -loglevel error -f v4l2 -input_format X -video_size WxH -framerate F -i DEV ...
 #define MAXARGS 64
-    fprintf(stderr, "[picam] Starting ffmpeg capture on %s (format=%s)\n", devnode, infmt ? infmt : "auto");
-
     char *argv[MAXARGS];
     int ac = 0;
     argv[ac++] = "ffmpeg";
     argv[ac++] = "-hide_banner";
     argv[ac++] = "-loglevel";
-    argv[ac++] = "info";
-    argv[ac++] = "-stats";
+    argv[ac++] = "error";
     argv[ac++] = "-f";
     argv[ac++] = "v4l2";
     argv[ac++] = "-input_format";

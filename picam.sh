@@ -25,7 +25,6 @@ DEFAULT_RESOLUTION="1280x720"        # Default video resolution
 DEFAULT_FPS="30"                     # Default frame rate
 DEFAULT_BITRATE="4000000"            # Default bitrate in bits per second
 DEFAULT_CORNER="top-left"            # Default position for stats overlay
-DEFAULT_DURATION="0"                 # Default duration in seconds (0 = endless)
 DEFAULT_SOURCE="auto"                # Default camera source (auto-detect)
 DEFAULT_ENCODE="auto"                # Default encoding method (auto-detect)
 
@@ -52,7 +51,6 @@ Options:
   -f, --fps <number>          Frame rate in frames per second (default: ${DEFAULT_FPS})
   -b, --bitrate <bits>        Target bitrate in bits per second (default: ${DEFAULT_BITRATE})
   -c, --corner <position>     Overlay corner: top-left, top-right, bottom-left, bottom-right (default: ${DEFAULT_CORNER})
-  -d, --duration <seconds>    Benchmark duration in seconds (0 = endless, default: ${DEFAULT_DURATION})
   -s, --source <device>       Camera source: auto, csi, or /dev/videoN (default: auto)
   -e, --encode <method>       Encoding method: auto, software, hardware (default: auto)
       --no-menu               Skip the interactive whiptail wizard
@@ -74,8 +72,6 @@ Examples:
   ${SCRIPT_NAME}                             # start the wizard
   ${SCRIPT_NAME} --method h264_sdl_preview \
       --resolution 1920x1080 --fps 25 --bitrate 6000000
-  ${SCRIPT_NAME} --no-menu --duration 60 \
-      --resolution 1280x720 --fps 30 --bitrate 4000000
 USAGE
 }
 
@@ -571,7 +567,7 @@ parse_resolution() {
 
 parse_arguments() {
   local parsed
-  parsed=$(getopt -o m:r:f:b:c:d:s:e:h --long method:,resolution:,fps:,bitrate:,corner:,duration:,source:,encode:,help,menu,no-menu,no-overlay,check-deps,install-deps,debug-cameras,test-usb,list-cameras -- "$@") || {
+  parsed=$(getopt -o m:r:f:b:c:s:e:h --long method:,resolution:,fps:,bitrate:,corner:,source:,encode:,help,menu,no-menu,no-overlay,check-deps,install-deps,debug-cameras,test-usb,list-cameras -- "$@") || {
     usage
     exit 1
   }
@@ -597,10 +593,6 @@ parse_arguments() {
         ;;
       -c|--corner)
         OVERLAY_CORNER="$2"
-        shift 2
-        ;;
-      -d|--duration)
-        DURATION="$2"
         shift 2
         ;;
       -s|--source)
@@ -690,7 +682,6 @@ validate_configuration() {
   parse_resolution "$RESOLUTION"
   validate_numeric "$FPS" "FPS"
   validate_numeric "$BITRATE" "bitrate"
-  validate_numeric "$DURATION" "duration"
   validate_corner "$OVERLAY_CORNER"
   validate_encoding "$ENCODE"
 }
@@ -722,11 +713,6 @@ show_whiptail_wizard() {
   bitrate_choice=$(whiptail --title "Bitrate" --inputbox "Enter bitrate (bits per second)" 8 60 "$BITRATE" \
     3>&1 1>&2 2>&3) || exit 1
   BITRATE="$bitrate_choice"
-
-  local duration_choice
-  duration_choice=$(whiptail --title "Duration" --inputbox "Enter duration in seconds (0 = endless)" 8 60 "$DURATION" \
-    3>&1 1>&2 2>&3) || exit 1
-  DURATION="$duration_choice"
 
   local corner_choice
   corner_choice=$(whiptail --title "Overlay position" --menu "Select overlay corner" 15 60 4 \
@@ -1246,29 +1232,19 @@ run_h264_sdl_preview() {
       -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
       -f h264 -i "$video_fifo" \
       -vf "$drawtext" -an -f sdl "PiCam Preview" \
-      2>&1 | tee "$ffmpeg_log" &
+      2> >(stdbuf -oL tee "$ffmpeg_log" >&2) &
   else
     stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
       -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
       -f h264 -i "$video_fifo" \
       -an -f sdl "PiCam Preview" \
-      2>&1 | tee "$ffmpeg_log" &
+      2> >(stdbuf -oL tee "$ffmpeg_log" >&2) &
   fi
   ffmpeg_pid=$!
 
-  local timeout_ms
-  if [[ "$DURATION" -gt 0 ]]; then
-    timeout_ms=$((DURATION * 1000))
-    echo "Starting $DURATION second benchmark..."
-  else
-    timeout_ms=0
-    echo "Starting endless benchmark (Ctrl+C to stop)..."
-  fi
-
-  # Start camera with verbose output, redirect video to FIFO
-  stdbuf -oL "$(get_camera_command)" --inline --codec h264 --timeout "$timeout_ms" \
+  stdbuf -oL "$(get_camera_command)" --inline --codec h264 --timeout 0 \
     --width "$width" --height "$height" --framerate "$fps" \
-    --bitrate "$bitrate" -o "$video_fifo" &
+    --bitrate "$bitrate" -o - > "$video_fifo" &
   camera_pid=$!
 
   if [[ "$NO_OVERLAY" -eq 0 ]]; then
@@ -1349,24 +1325,18 @@ run_usb_h264_sdl_preview() {
     fi
   fi
 
-  if [[ "$DURATION" -gt 0 ]]; then
-    echo "Starting $DURATION second USB camera benchmark..."
-  else
-    echo "Starting endless USB camera benchmark (Ctrl+C to stop)..."
-  fi
-
   if [[ -n "$drawtext" ]]; then
     stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
       -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
       -f h264 -i "$video_fifo" \
       -vf "$drawtext" -an -f sdl "USB Camera Preview" \
-      2>&1 | tee "$ffmpeg_log" &
+      2> >(stdbuf -oL tee "$ffmpeg_log" >&2) &
   else
     stdbuf -oL -eL ffmpeg -hide_banner -loglevel info -stats \
       -fflags +nobuffer -flags +low_delay -reorder_queue_size 0 -thread_queue_size 512 \
       -f h264 -i "$video_fifo" \
       -an -f sdl "USB Camera Preview" \
-      2>&1 | tee "$ffmpeg_log" &
+      2> >(stdbuf -oL tee "$ffmpeg_log" >&2) &
   fi
   ffmpeg_pid=$!
 
@@ -1393,31 +1363,26 @@ run_usb_h264_sdl_preview() {
   fi
   ffmpeg_input_args+=( -video_size "${width}x${height}" -framerate "$FPS" -i "$usb_device" )
 
-  local -a duration_args=()
-  if [[ "$DURATION" -gt 0 ]]; then
-    duration_args=( -t "$DURATION" )
-  fi
-
   if [[ "$encoding_method" == "hardware" ]]; then
     if [[ "$input_format" == "h264" ]]; then
       stdbuf -oL ffmpeg -hide_banner -loglevel info -stats \
-        "${ffmpeg_input_args[@]}" "${duration_args[@]}" \
-        -c:v copy -f h264 "$video_fifo" 2>&1 &
+        "${ffmpeg_input_args[@]}" \
+        -c:v copy -f h264 "$video_fifo" &
       camera_pid=$!
     else
       stdbuf -oL ffmpeg -hide_banner -loglevel info -stats \
-        "${ffmpeg_input_args[@]}" "${duration_args[@]}" \
+        "${ffmpeg_input_args[@]}" \
         -pix_fmt nv12 -c:v h264_v4l2m2m \
         -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize $((BITRATE * 2)) \
-        -f h264 "$video_fifo" 2>&1 &
+        -f h264 "$video_fifo" &
       camera_pid=$!
     fi
   else
     stdbuf -oL ffmpeg -hide_banner -loglevel info -stats \
-      "${ffmpeg_input_args[@]}" "${duration_args[@]}" \
+      "${ffmpeg_input_args[@]}" \
       -c:v libx264 -preset ultrafast -tune zerolatency \
       -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize $((BITRATE * 2)) \
-      -f h264 "$video_fifo" 2>&1 &
+      -f h264 "$video_fifo" &
     camera_pid=$!
   fi
 
@@ -1475,7 +1440,6 @@ main() {
   FPS="$DEFAULT_FPS"                 # Frame rate
   BITRATE="$DEFAULT_BITRATE"         # Target bitrate
   OVERLAY_CORNER="$DEFAULT_CORNER"   # Stats overlay position
-  DURATION="$DEFAULT_DURATION"       # Benchmark duration in seconds
   SOURCE="$DEFAULT_SOURCE"           # Camera source
   ENCODE="$DEFAULT_ENCODE"           # Encoding method
   SKIP_MENU=0                       # Skip interactive menu flag
