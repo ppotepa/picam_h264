@@ -1,8 +1,47 @@
 #!/usr/bin/env bash
 # list-devices.sh — list USB and non-USB devices with their /dev nodes + metadata
 # Works on Raspberry Pi OS / any udev-based Linux. No extra packages required.
+# Usage: ./list-devices.sh [--video|--usb|--all]
 
 set -euo pipefail
+
+# Default filter mode
+FILTER_MODE="all"
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --video)
+      FILTER_MODE="video"
+      shift
+      ;;
+    --usb)
+      FILTER_MODE="usb"
+      shift
+      ;;
+    --all)
+      FILTER_MODE="all"
+      shift
+      ;;
+    -h|--help)
+      echo "Usage: $0 [--video|--usb|--all]"
+      echo "  --video  Show only video devices (/dev/video*)"
+      echo "  --usb    Show only USB-connected devices"
+      echo "  --all    Show all devices (default)"
+      echo ""
+      echo "Examples:"
+      echo "  $0 --video    # Show camera/video devices"
+      echo "  $0 --usb      # Show USB devices"
+      echo "  $0 | grep -i camera  # Search for camera-related devices"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Use --help for usage information" >&2
+      exit 1
+      ;;
+  esac
+done
 
 # ===== helpers =====
 bn() { basename "$(readlink -f "$1" 2>/dev/null || echo "$1")"; }
@@ -20,6 +59,29 @@ print_header() {
     "------------------------" "------------------------" "-----------------------------"
 }
 
+should_show_device() {
+  local devnode="$1" props="$2"
+  
+  case "$FILTER_MODE" in
+    video)
+      # Show video devices
+      [[ "$devnode" =~ ^/dev/video[0-9]+$ ]] && return 0
+      # Also show related camera/media devices
+      [[ "$devnode" =~ ^/dev/media[0-9]+$ ]] && return 0
+      return 1
+      ;;
+    usb)
+      # Show USB-connected devices
+      echo "$props" | grep -q "ID_BUS=usb\|ID_PATH=.*usb" && return 0
+      return 1
+      ;;
+    all)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 emit_row() {
   local devnode="$1" devdir="$2"
 
@@ -28,6 +90,11 @@ emit_row() {
   props="$(udevadm info --query=property --name="$devnode" 2>/dev/null || true)"
   if [[ -z "$props" && -n "$devdir" ]]; then
     props="$(udevadm info --query=property --path="$devdir" 2>/dev/null || true)"
+  fi
+  
+  # Apply filtering
+  if ! should_show_device "$devnode" "$props"; then
+    return 0
   fi
 
   # Subsystem and driver
@@ -103,6 +170,12 @@ while IFS= read -r -d '' devnode; do
   case "$devnode" in
     /dev/null|/dev/zero|/dev/random|/dev/urandom|/dev/tty|/dev/pts/*|/dev/shm/*) continue ;;
   esac
+  
+  # Skip block devices when looking for video devices
+  if [[ "$FILTER_MODE" == "video" && -b "$devnode" ]]; then
+    continue
+  fi
+  
   [[ -z "${printed[$devnode]:-}" ]] || continue
 
   # Try to get sysfs path to pass to emit_row (optional)
@@ -115,6 +188,31 @@ while IFS= read -r -d '' devnode; do
   printed[$devnode]=1
 done < <(find /dev -maxdepth 1 -type c -o -type b -print0 2>/dev/null)
 
+# Show summary for video devices if in video mode
+if [[ "$FILTER_MODE" == "video" ]]; then
+  echo ""
+  echo "=== Video Device Summary ==="
+  if ls /dev/video* >/dev/null 2>&1; then
+    echo "Found video devices:"
+    for video_dev in /dev/video*; do
+      if [[ -c "$video_dev" ]]; then
+        echo "  $video_dev"
+        # Try to get device info
+        if command -v v4l2-ctl >/dev/null 2>&1; then
+          v4l2-ctl --device="$video_dev" --info 2>/dev/null | head -3 | sed 's/^/    /'
+        fi
+      fi
+    done
+  else
+    echo "No video devices found."
+    echo "Tips:"
+    echo "  - Connect a USB camera and run again"
+    echo "  - Check if CSI camera is enabled: sudo raspi-config -> Interface Options -> Camera"
+    echo "  - For CSI cameras, use: libcamera-hello --list-cameras"
+  fi
+fi
+
 # Hints:
-#   ./list-devices.sh | grep -i usb
-#   ./list-devices.sh | grep -E '/dev/video|/dev/tty|/dev/sd|/dev/mmcblk'
+#   ./list-devices.sh --video     # Show only camera/video devices  
+#   ./list-devices.sh --usb       # Show only USB devices
+#   ./list-devices.sh | grep -i camera  # Search for camera-related devices
