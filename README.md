@@ -1,26 +1,17 @@
 # picam_h264
 
-Skrypt `picam.sh` udostępnia interaktywne menu (whiptail) oraz argumenty wiersza poleceń do uruchamiania testów wydajności kamery na Raspberry Pi Zero W. Aktualnie dostępna metoda pipeline wykorzystuje `libcamera-vid`, kodowanie H.264 i podgląd w oknie SDL zbudowanym przez `ffmpeg`.
+Skrypt `picam.sh` udostępnia interaktywne menu (whiptail) oraz argumenty wiersza poleceń do uruchamiania testów wydajności kamery na Raspberry Pi Zero W. Domyślna metoda pipeline korzysta z kodowania H.264, procesów `libcamera-vid`/`rpicam-vid` (zależnie od wersji systemu) oraz podglądu SDL uruchamianego przez `ffmpeg`. Skrypt potrafi również automatycznie przełączyć się na rejestrację z kamer USB (V4L2), dzięki czemu nie trzeba ręcznie modyfikować konfiguracji.
 
 ## Wymagania
 
-- Raspberry Pi OS (Bullseye lub nowszy) z aktywnym stosom libcamera.
-- Podłączona i skonfigurowana kamera CSI.
-- Zainstalowane pakiety: `libcamera-apps`, `ffmpeg`, `coreutils` (dla `stdbuf`), `awk` i `ps` (z pakietu `procps`). Pakiet `libcamera-apps`
-  dostarcza polecenie `libcamera-vid` wymagane przez pipeline H.264.
-- `whiptail` (wymagany tylko, gdy korzystasz z kreatora).
+- Raspberry Pi OS (Bullseye lub nowszy).
+- Co najmniej jedno urządzenie rejestrujące obraz:
+  - kamera CSI obsługiwana przez libcamera,
+  - **lub** kamera USB obsługiwana przez V4L2.
+- Pakiety: `libcamera-apps` (dostarcza `libcamera-vid`/`rpicam-vid`), `ffmpeg`, `coreutils` (dla `stdbuf`), `gawk`, `procps` (`ps`) oraz `v4l-utils` (opcjonalnie, ale przydatny do diagnostyki kamer USB).
+- `whiptail` (tylko gdy korzystasz z kreatora).
 
-`picam.sh` automatycznie sprawdza obecność powyższych poleceń i, jeśli to możliwe, doinstaluje brakujące pakiety (`apt-get` z użyciem `sudo`, gdy nie uruchamiasz skryptu jako root). Do ręcznej obsługi zależności możesz wykorzystać pomocniczy skrypt `dep.sh`:
-
-```bash
-# samo sprawdzenie
-./dep.sh --check
-
-# instalacja braków (wymaga roota lub sudo)
-sudo ./dep.sh
-```
-
-Aby wykonać weryfikację środowiska bez uruchamiania benchmarku, użyj również `./picam.sh --check-deps`. Dodaj `--menu`, aby w trybie sprawdzania potraktować `whiptail` jako zależność obowiązkową.
+`picam.sh` automatycznie weryfikuje dostępność powyższych poleceń i – **tylko gdy czegoś brakuje** – spróbuje doinstalować wymagane pakiety (`sudo apt-get`, jeśli nie działasz jako root). Przy kolejnych uruchomieniach instalacja nie jest powtarzana, dzięki czemu start jest szybki.
 
 ## Użycie
 
@@ -47,6 +38,19 @@ Każda opcja dostępna w kreatorze może zostać ustawiona z linii poleceń:
 Przełącznik `--no-menu` pomija kreator. Aby wymusić jego pokazanie mimo podania argumentów, użyj `--menu`.
 
 Skrypt waliduje wartości FPS, bitrate oraz rozdzielczości i zakończy działanie z komunikatem błędu, jeśli parametry są niepoprawne. Po zatrzymaniu przechwytywania (również sygnałem `Ctrl+C`) tymczasowe pliki FIFO i procesy zostaną uporządkowane automatycznie.
+
+### Tryby diagnostyczne
+
+`picam.sh` udostępnia kilka przełączników pomocnych przy rozwiązywaniu problemów:
+
+```bash
+./picam.sh --check-deps       # weryfikuje zależności, nie instaluje pakietów
+./picam.sh --install-deps     # doinstalowuje brakujące pakiety i kończy działanie
+./picam.sh --debug-cameras    # wypisuje raport wykrytych kamer (CSI/USB)
+./picam.sh --test-usb         # uruchamia 5‑sekundowy test przechwytywania z kamery USB
+```
+
+Opcja `--test-usb` korzysta bezpośrednio z `ffmpeg` i nie uruchamia pełnego pipeline’u – to szybki sposób na sprawdzenie, czy urządzenie USB jest poprawnie dostępne.
 
 ### Zakończenie
 

@@ -9,7 +9,6 @@ DEFAULT_BITRATE="4000000"
 DEFAULT_CORNER="top-left"
 
 SCRIPT_NAME=$(basename "$0")
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 die() {
   local msg="$1"
   echo "${SCRIPT_NAME}: ${msg}" >&2
@@ -28,7 +27,10 @@ Options:
   -c, --corner <position>     Overlay corner: top-left, top-right, bottom-left, bottom-right (default: ${DEFAULT_CORNER})
       --no-menu               Skip the interactive whiptail wizard
       --menu                  Force showing the wizard even if arguments are provided
-      --check-deps            Only verify dependencies and exit
+      --check-deps            Only verify dependencies (no installation) and exit
+      --install-deps          Install missing dependencies and exit
+      --debug-cameras         Print a detailed camera detection report and exit
+      --test-usb              Run a short USB camera capture test (requires ffmpeg) and exit
   -h, --help                  Show this help message and exit
 
 Examples:
@@ -38,7 +40,7 @@ Examples:
 USAGE
 }
 
-REQUIRED_COMMANDS=(
+REQUIRED_COMMANDS_BASE=(
   libcamera-vid
   ffmpeg
   awk
@@ -46,9 +48,55 @@ REQUIRED_COMMANDS=(
   stdbuf
 )
 
-OPTIONAL_COMMANDS=(
+OPTIONAL_COMMANDS_BASE=(
+  whiptail
   v4l2-ctl
 )
+
+declare -A COMMAND_PACKAGES=(
+  [libcamera-vid]="libcamera-apps"
+  [rpicam-vid]="libcamera-apps"
+  [ffmpeg]="ffmpeg"
+  [awk]="gawk"
+  [ps]="procps"
+  [stdbuf]="coreutils"
+  [whiptail]="whiptail"
+  [v4l2-ctl]="v4l-utils"
+)
+
+declare -a MISSING_REQUIRED_COMMANDS=()
+declare -a MISSING_OPTIONAL_COMMANDS=()
+
+build_required_commands() {
+  local require_whiptail="$1"
+  local -n _out="$2"
+  _out=("${REQUIRED_COMMANDS_BASE[@]}")
+  if [[ "$require_whiptail" -eq 1 ]]; then
+    _out+=("whiptail")
+  fi
+}
+
+build_optional_commands() {
+  local require_whiptail="$1"
+  local -n _out="$2"
+  _out=()
+  for cmd in "${OPTIONAL_COMMANDS_BASE[@]}"; do
+    if [[ "$require_whiptail" -eq 1 && "$cmd" == "whiptail" ]]; then
+      continue
+    fi
+    _out+=("$cmd")
+  done
+}
+
+check_camera_command() {
+  if command -v libcamera-vid >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v rpicam-vid >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
 
 # Get the correct camera command (libcamera-vid or rpicam-vid)
 get_camera_command() {
@@ -121,36 +169,178 @@ get_camera_type() {
   fi
 }
 
-build_dependency_command() {
-  local require_whiptail="$1"
-  local mode="$2"
-  local -n _out="$3"
-  local dep_script="${SCRIPT_DIR}/dep.sh"
+collect_install_plan() {
+  local -n _commands="$1"
+  local -n _packages_out="$2"
+  local -n _missing_without_pkg="$3"
 
-  if [[ ! -x "$dep_script" ]]; then
-    die "Dependency helper not found or not executable at '$dep_script'"
+  _packages_out=()
+  _missing_without_pkg=()
+
+  declare -A seen=()
+  for cmd in "${_commands[@]}"; do
+    local pkg="${COMMAND_PACKAGES[$cmd]:-}"
+    if [[ -n "$pkg" ]]; then
+      if [[ -z "${seen[$pkg]+x}" ]]; then
+        _packages_out+=("$pkg")
+        seen[$pkg]=1
+      fi
+    else
+      _missing_without_pkg+=("$cmd")
+    fi
+  done
+}
+
+maybe_sudo() {
+  if [[ $EUID -eq 0 ]]; then
+    "$@"
+    return
   fi
 
-  _out=("$dep_script")
-  if [[ "$mode" == "check" ]]; then
-    _out+=(--check)
+  if command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    echo "${SCRIPT_NAME}: Cannot run '$1' automatically (sudo unavailable)." >&2
+    return 1
   fi
-  if [[ "$require_whiptail" -eq 1 ]]; then
-    _out+=(--require-whiptail)
+}
+
+apt_update_and_install() {
+  local -n _packages_ref="$1"
+
+  if [[ ${#_packages_ref[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "${SCRIPT_NAME}: apt-get is required to install packages automatically." >&2
+    return 1
+  fi
+
+  if ! maybe_sudo apt-get update; then
+    return 1
+  fi
+
+  if ! maybe_sudo apt-get install -y "${_packages_ref[@]}"; then
+    return 1
   fi
 }
 
 check_dependencies() {
-  local missing=()
-  for cmd in "${REQUIRED_COMMANDS[@]}"; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-      missing+=("$cmd")
+  local require_whiptail="$1"
+
+  local required_commands=()
+  local optional_commands=()
+  build_required_commands "$require_whiptail" required_commands
+  build_optional_commands "$require_whiptail" optional_commands
+
+  MISSING_REQUIRED_COMMANDS=()
+  MISSING_OPTIONAL_COMMANDS=()
+
+  echo "Checking required commands..."
+  for cmd in "${required_commands[@]}"; do
+    if [[ "$cmd" == "libcamera-vid" ]]; then
+      if command -v libcamera-vid >/dev/null 2>&1; then
+        echo "[OK] libcamera-vid"
+      elif command -v rpicam-vid >/dev/null 2>&1; then
+        echo "[OK] rpicam-vid (replaces libcamera-vid)"
+      else
+        local pkg="${COMMAND_PACKAGES[$cmd]:-}"
+        if [[ -n "$pkg" ]]; then
+          echo "[MISSING] libcamera-vid (install package: $pkg)"
+        else
+          echo "[MISSING] libcamera-vid"
+        fi
+        MISSING_REQUIRED_COMMANDS+=("$cmd")
+      fi
+    elif command -v "$cmd" >/dev/null 2>&1; then
+      echo "[OK] $cmd"
+    else
+      local pkg="${COMMAND_PACKAGES[$cmd]:-}"
+      if [[ -n "$pkg" ]]; then
+        echo "[MISSING] $cmd (install package: $pkg)"
+      else
+        echo "[MISSING] $cmd"
+      fi
+      MISSING_REQUIRED_COMMANDS+=("$cmd")
     fi
   done
 
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    die "Required dependency '${missing[0]}' was not found."
+  if [[ ${#optional_commands[@]} -gt 0 ]]; then
+    echo
+    echo "Checking optional commands..."
+    for cmd in "${optional_commands[@]}"; do
+      if command -v "$cmd" >/dev/null 2>&1; then
+        echo "[OK] $cmd"
+      else
+        local pkg="${COMMAND_PACKAGES[$cmd]:-}"
+        if [[ -n "$pkg" ]]; then
+          echo "[OPTIONAL MISSING] $cmd (install package: $pkg)"
+        else
+          echo "[OPTIONAL MISSING] $cmd"
+        fi
+        MISSING_OPTIONAL_COMMANDS+=("$cmd")
+      fi
+    done
   fi
+
+  if [[ ${#MISSING_REQUIRED_COMMANDS[@]} -gt 0 ]]; then
+    return 1
+  fi
+  return 0
+}
+
+attempt_dependency_install() {
+  local require_whiptail="$1"
+
+  local packages=()
+  local missing_without_pkg=()
+  collect_install_plan MISSING_REQUIRED_COMMANDS packages missing_without_pkg
+
+  if [[ ${#missing_without_pkg[@]} -gt 0 ]]; then
+    echo "${SCRIPT_NAME}: Missing required commands without known packages: ${missing_without_pkg[*]}" >&2
+    return 1
+  fi
+
+  if [[ ${#packages[@]} -eq 0 ]]; then
+    echo "${SCRIPT_NAME}: Required commands are missing but no packages were identified." >&2
+    return 1
+  fi
+
+  echo "Installing packages: ${packages[*]}"
+  if ! apt_update_and_install packages; then
+    echo "${SCRIPT_NAME}: Package installation failed." >&2
+    return 1
+  fi
+
+  hash -r 2>/dev/null || true
+
+  if check_dependencies "$require_whiptail"; then
+    return 0
+  fi
+
+  echo "${SCRIPT_NAME}: Dependencies remain missing after installation." >&2
+  return 1
+}
+
+ensure_dependencies() {
+  local require_whiptail="$1"
+  local auto_install="${2:-1}"
+
+  if check_dependencies "$require_whiptail"; then
+    return 0
+  fi
+
+  if [[ "$auto_install" -eq 0 ]]; then
+    return 1
+  fi
+
+  echo "Missing dependencies detected."
+  if ! attempt_dependency_install "$require_whiptail"; then
+    return 1
+  fi
+
+  return 0
 }
 
 parse_resolution() {
@@ -164,7 +354,7 @@ parse_resolution() {
 
 parse_arguments() {
   local parsed
-  parsed=$(getopt -o m:r:f:b:c:h --long method:,resolution:,fps:,bitrate:,corner:,help,menu,no-menu,check-deps -- "$@") || {
+  parsed=$(getopt -o m:r:f:b:c:h --long method:,resolution:,fps:,bitrate:,corner:,help,menu,no-menu,check-deps,install-deps,debug-cameras,test-usb -- "$@") || {
     usage
     exit 1
   }
@@ -202,6 +392,18 @@ parse_arguments() {
         ;;
       --check-deps)
         CHECK_DEPS_ONLY=1
+        shift
+        ;;
+      --install-deps)
+        INSTALL_DEPS_ONLY=1
+        shift
+        ;;
+      --debug-cameras)
+        DEBUG_CAMERAS_ONLY=1
+        shift
+        ;;
+      --test-usb)
+        USB_TEST_ONLY=1
         shift
         ;;
       -h|--help)
@@ -377,6 +579,142 @@ monitor_metrics() {
 
     sleep 1
   done
+}
+
+run_camera_debug_report() {
+  local camera_cmd
+  camera_cmd=$(get_camera_command)
+
+  echo "=== Camera command detection ==="
+  echo "Preferred camera command: $camera_cmd"
+  echo
+
+  echo "=== Checking libcamera-apps package contents ==="
+  if command -v dpkg >/dev/null 2>&1; then
+    local dpkg_output
+    if dpkg_output=$(dpkg -L libcamera-apps 2>/dev/null); then
+      local binaries
+      binaries=$(grep -E '/bin/' <<<"$dpkg_output" || true)
+      if [[ -n "$binaries" ]]; then
+        echo "$binaries"
+      else
+        echo "No binaries in /bin provided by libcamera-apps."
+      fi
+    else
+      echo "Package 'libcamera-apps' is not installed."
+    fi
+  else
+    echo "dpkg not available; skipping package inspection."
+  fi
+  echo
+
+  echo "=== Searching for camera binaries in PATH ==="
+  if command -v libcamera-vid >/dev/null 2>&1; then
+    echo "libcamera-vid -> $(command -v libcamera-vid)"
+  else
+    echo "libcamera-vid not found in PATH"
+  fi
+  if command -v rpicam-vid >/dev/null 2>&1; then
+    echo "rpicam-vid -> $(command -v rpicam-vid)"
+  else
+    echo "rpicam-vid not found in PATH"
+  fi
+  echo
+
+  echo "=== Listing camera-related binaries ==="
+  if command -v find >/dev/null 2>&1; then
+    local find_output
+    find_output=$(find /usr/bin /usr/local/bin -maxdepth 1 -type f \
+      \( -name "*libcamera*" -o -name "*rpicam*" \) 2>/dev/null | sort || true)
+    if [[ -n "$find_output" ]]; then
+      echo "$find_output"
+    else
+      echo "No camera binaries found in standard locations."
+    fi
+  else
+    echo "find command not available; skipping binary listing."
+  fi
+  echo
+
+  echo "=== Testing the camera command ==="
+  if command -v "$camera_cmd" >/dev/null 2>&1; then
+    echo "Running '$camera_cmd --list-cameras'..."
+    "$camera_cmd" --list-cameras 2>&1 || true
+  else
+    echo "Camera command '$camera_cmd' is not available."
+  fi
+  echo
+
+  echo "=== Camera detection summary ==="
+  local detection
+  detection=$(detect_cameras)
+  eval "$detection"
+  echo "CSI camera available: $csi_available"
+  echo "USB camera available: $usb_available"
+  echo "USB device: ${usb_device:-<none>}"
+  echo "Selected camera type: $(get_camera_type)"
+}
+
+run_usb_camera_test() {
+  echo "=== USB camera diagnostic ==="
+
+  ls -la /dev/video* 2>/dev/null || echo "No /dev/video* entries found."
+  echo
+
+  parse_resolution "$RESOLUTION"
+  local width="$WIDTH"
+  local height="$HEIGHT"
+
+  local usb_device=""
+  if ls /dev/video* >/dev/null 2>&1; then
+    if command -v v4l2-ctl >/dev/null 2>&1; then
+      for device in /dev/video*; do
+        [[ -c "$device" ]] || continue
+        if v4l2-ctl --device="$device" --list-formats-ext 2>/dev/null | grep -q "H264\|MJPG\|YUYV"; then
+          usb_device="$device"
+          break
+        fi
+      done
+    else
+      for device in /dev/video*; do
+        [[ -c "$device" ]] || continue
+        usb_device="$device"
+        break
+      done
+    fi
+  fi
+
+  if [[ -z "$usb_device" ]]; then
+    echo "No suitable USB camera detected."
+    return 1
+  fi
+
+  echo "Selected device: $usb_device"
+
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "ffmpeg is required for the USB camera test." >&2
+    return 1
+  fi
+
+  local capture_cmd=(ffmpeg -f v4l2 -input_format mjpeg -video_size "${width}x${height}" -framerate "$FPS" -i "$usb_device" -t 5 -f null -)
+  local timeout_cmd=()
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_cmd=(timeout 6s)
+  fi
+
+  echo "Capturing 5 seconds from $usb_device using ffmpeg..."
+  local ffmpeg_output
+  if ! ffmpeg_output=$("${timeout_cmd[@]}" "${capture_cmd[@]}" 2>&1); then
+    printf '%s\n' "$ffmpeg_output"
+    echo "ffmpeg capture reported an error." >&2
+    return 1
+  fi
+
+  printf '%s\n' "$ffmpeg_output" | tail -n 10
+  echo
+  echo "USB camera test completed successfully."
+  echo "You can run the capture manually with:"
+  echo "ffmpeg -f v4l2 -input_format mjpeg -video_size ${width}x${height} -framerate $FPS -i $usb_device -t 5 output.mp4"
 }
 
 run_h264_sdl_preview() {
@@ -567,6 +905,9 @@ main() {
   SKIP_MENU=0
   FORCE_MENU=0
   CHECK_DEPS_ONLY=0
+  INSTALL_DEPS_ONLY=0
+  DEBUG_CAMERAS_ONLY=0
+  USB_TEST_ONLY=0
 
   local original_argc=$#
   local show_menu=0
@@ -581,46 +922,40 @@ main() {
     fi
   fi
 
-  if (( CHECK_DEPS_ONLY )); then
-    local dep_check_cmd=()
-    build_dependency_command "$require_whiptail" "check" dep_check_cmd
-    if "${dep_check_cmd[@]}"; then
+  if (( DEBUG_CAMERAS_ONLY )); then
+    run_camera_debug_report
+    exit 0
+  fi
+
+  if (( USB_TEST_ONLY )); then
+    if ! ensure_dependencies 0 1; then
+      die "Dependencies remain missing; cannot run USB camera test."
+    fi
+    if run_usb_camera_test; then
       exit 0
     else
       exit 1
     fi
   fi
 
-  local dep_check_cmd=()
-  build_dependency_command "$require_whiptail" "check" dep_check_cmd
-
-  if ! "${dep_check_cmd[@]}"; then
-    echo "Missing dependencies detected."
-    if [[ $EUID -eq 0 ]]; then
-      local dep_install_cmd=()
-      build_dependency_command "$require_whiptail" "install" dep_install_cmd
-      if ! "${dep_install_cmd[@]}"; then
-        die "Automatic dependency installation failed."
-      fi
+  if (( CHECK_DEPS_ONLY )); then
+    if ensure_dependencies "$require_whiptail" 0; then
+      exit 0
     else
-      if command -v sudo >/dev/null 2>&1; then
-        echo "Requesting sudo privileges to install required packages..."
-        local dep_install_cmd=()
-        build_dependency_command "$require_whiptail" "install" dep_install_cmd
-        if ! sudo "${dep_install_cmd[@]}"; then
-          die "Automatic dependency installation via sudo failed."
-        fi
-      else
-        die "Dependency check failed and sudo is unavailable. Run '${SCRIPT_DIR}/dep.sh' as root to install requirements."
-      fi
+      exit 1
     fi
+  fi
 
-    hash -r 2>/dev/null || true
-
-    build_dependency_command "$require_whiptail" "check" dep_check_cmd
-    if ! "${dep_check_cmd[@]}"; then
-      die "Dependencies are still missing after attempting installation."
+  if (( INSTALL_DEPS_ONLY )); then
+    if ensure_dependencies "$require_whiptail" 1; then
+      exit 0
+    else
+      die "Dependency installation failed."
     fi
+  fi
+
+  if ! ensure_dependencies "$require_whiptail" 1; then
+    die "Dependencies remain missing after automatic installation attempt."
   fi
 
   if [[ "$show_menu" -eq 1 ]]; then
@@ -632,3 +967,4 @@ main() {
 }
 
 main "$@"
+
