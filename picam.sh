@@ -26,6 +26,7 @@ DEFAULT_FPS="30"                     # Default frame rate
 DEFAULT_BITRATE="4000000"            # Default bitrate in bits per second
 DEFAULT_CORNER="top-left"            # Default position for stats overlay
 DEFAULT_SOURCE="auto"                # Default camera source (auto-detect)
+DEFAULT_ENCODE="auto"                # Default encoding method (auto-detect)
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -51,6 +52,7 @@ Options:
   -b, --bitrate <bits>        Target bitrate in bits per second (default: ${DEFAULT_BITRATE})
   -c, --corner <position>     Overlay corner: top-left, top-right, bottom-left, bottom-right (default: ${DEFAULT_CORNER})
   -s, --source <device>       Camera source: auto, csi, or /dev/videoN (default: auto)
+  -e, --encode <method>       Encoding method: auto, software, hardware (default: auto)
       --no-menu               Skip the interactive whiptail wizard
       --menu                  Force showing the wizard even if arguments are provided
       --check-deps            Only verify dependencies (no installation) and exit
@@ -59,6 +61,11 @@ Options:
       --test-usb              Run a short USB camera capture test (requires ffmpeg) and exit
       --list-cameras          List available cameras and exit
   -h, --help                  Show this help message and exit
+
+Encoding Methods:
+  auto                        Auto-detect best available encoding (hardware preferred)
+  software                    Use software encoding (libx264 - CPU intensive)
+  hardware                    Use Pi's hardware encoder (h264_v4l2m2m via /dev/video11)
 
 Examples:
   ${SCRIPT_NAME}                             # start the wizard
@@ -270,6 +277,51 @@ get_camera_type() {
   fi
 }
 
+# =============================================================================
+# ENCODING DETECTION AND SELECTION
+# =============================================================================
+
+# Check if Pi's hardware H.264 encoder is available
+# Returns 0 if hardware encoder available, 1 otherwise
+detect_hardware_encoder() {
+  # Check if Pi's hardware encoder is available
+  if [[ -c "/dev/video11" ]] && command -v v4l2-ctl >/dev/null 2>&1; then
+    local encoder_info
+    encoder_info=$(v4l2-ctl --device=/dev/video11 --info 2>/dev/null || true)
+    if echo "$encoder_info" | grep -q "bcm2835-codec-encode"; then
+      return 0  # Hardware encoder available
+    fi
+  fi
+  return 1  # Hardware encoder not available
+}
+
+# Get the encoding method to use based on user preference and availability
+get_encoding_method() {
+  case "$ENCODE" in
+    software)
+      echo "software"
+      ;;
+    hardware)
+      if detect_hardware_encoder; then
+        echo "hardware"
+      else
+        echo "software"  # Fallback to software if hardware not available
+      fi
+      ;;
+    auto)
+      # Auto-detect: prefer hardware if available
+      if detect_hardware_encoder; then
+        echo "hardware"
+      else
+        echo "software"
+      fi
+      ;;
+    *)
+      die "Invalid encoding method: '$ENCODE'. Use 'auto', 'software', or 'hardware'"
+      ;;
+  esac
+}
+
 collect_install_plan() {
   local -n _commands="$1"
   local -n _packages_out="$2"
@@ -455,7 +507,7 @@ parse_resolution() {
 
 parse_arguments() {
   local parsed
-  parsed=$(getopt -o m:r:f:b:c:s:h --long method:,resolution:,fps:,bitrate:,corner:,source:,help,menu,no-menu,check-deps,install-deps,debug-cameras,test-usb,list-cameras -- "$@") || {
+  parsed=$(getopt -o m:r:f:b:c:s:e:h --long method:,resolution:,fps:,bitrate:,corner:,source:,encode:,help,menu,no-menu,check-deps,install-deps,debug-cameras,test-usb,list-cameras -- "$@") || {
     usage
     exit 1
   }
@@ -485,6 +537,10 @@ parse_arguments() {
         ;;
       -s|--source)
         SOURCE="$2"
+        shift 2
+        ;;
+      -e|--encode)
+        ENCODE="$2"
         shift 2
         ;;
       --menu)
@@ -548,11 +604,22 @@ validate_corner() {
   esac
 }
 
+validate_encoding() {
+  case "$1" in
+    auto|software|hardware)
+      ;;
+    *)
+      die "Invalid encoding method '${1}'. Use one of: auto, software, hardware."
+      ;;
+  esac
+}
+
 validate_configuration() {
   parse_resolution "$RESOLUTION"
   validate_numeric "$FPS" "FPS"
   validate_numeric "$BITRATE" "bitrate"
   validate_corner "$OVERLAY_CORNER"
+  validate_encoding "$ENCODE"
 }
 
 # =============================================================================
@@ -632,6 +699,21 @@ show_whiptail_wizard() {
       "${source_options[@]}" \
       3>&1 1>&2 2>&3) || exit 1
     SOURCE="$source_choice"
+  fi
+
+  # Encoding method selection
+  local encode_options=("auto" "Auto-detect (hardware preferred)")
+  encode_options+=("software" "Software encoding (CPU intensive)")
+  if detect_hardware_encoder; then
+    encode_options+=("hardware" "Hardware encoding (Pi's H.264 encoder)")
+  fi
+
+  if [[ ${#encode_options[@]} -gt 2 ]]; then
+    local encode_choice
+    encode_choice=$(whiptail --title "Encoding Method" --menu "Select encoding method" 15 78 10 \
+      "${encode_options[@]}" \
+      3>&1 1>&2 2>&3) || exit 1
+    ENCODE="$encode_choice"
   fi
 }
 
@@ -1173,13 +1255,30 @@ run_usb_h264_sdl_preview() {
   ffmpeg_pid=$!
 
   # Use ffmpeg to capture from USB camera and encode to H.264
-  stdbuf -oL ffmpeg -hide_banner -loglevel error \
-    -f v4l2 -input_format mjpeg -video_size "${width}x${height}" -framerate "$FPS" \
-    -i "$usb_device" \
-    -c:v libx264 -preset ultrafast -tune zerolatency \
-    -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize $((BITRATE * 2)) \
-    -f h264 "$video_fifo" &
-  camera_pid=$!
+  local encoding_method
+  encoding_method=$(get_encoding_method)
+  
+  if [[ "$encoding_method" == "hardware" ]]; then
+    # Hardware encoding pipeline: USB camera -> hardware encoder -> H.264
+    stdbuf -oL ffmpeg -hide_banner -loglevel error \
+      -f v4l2 -input_format mjpeg -video_size "${width}x${height}" -framerate "$FPS" \
+      -i "$usb_device" \
+      -f rawvideo -pix_fmt yuv420p - \
+      2>/dev/null | \
+    v4l2-ctl --device=/dev/video11 --set-fmt-video=width="$width",height="$height",pixelformat=H264 \
+      --stream-to="$video_fifo" --stream-from=- \
+      2>/dev/null &
+    camera_pid=$!
+  else
+    # Software encoding pipeline (original)
+    stdbuf -oL ffmpeg -hide_banner -loglevel error \
+      -f v4l2 -input_format mjpeg -video_size "${width}x${height}" -framerate "$FPS" \
+      -i "$usb_device" \
+      -c:v libx264 -preset ultrafast -tune zerolatency \
+      -b:v "$BITRATE" -maxrate "$BITRATE" -bufsize $((BITRATE * 2)) \
+      -f h264 "$video_fifo" &
+    camera_pid=$!
+  fi
 
   monitor_metrics "$stats_file" "$ffmpeg_log" "$width" "$height" "$BITRATE" "$FPS" "$camera_pid" "$ffmpeg_pid" &
   monitor_pid=$!
@@ -1236,6 +1335,7 @@ main() {
   BITRATE="$DEFAULT_BITRATE"         # Target bitrate
   OVERLAY_CORNER="$DEFAULT_CORNER"   # Stats overlay position
   SOURCE="$DEFAULT_SOURCE"           # Camera source
+  ENCODE="$DEFAULT_ENCODE"           # Encoding method
   SKIP_MENU=0                       # Skip interactive menu flag
   FORCE_MENU=0                      # Force menu display flag
   CHECK_DEPS_ONLY=0                 # Only check dependencies flag
