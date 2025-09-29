@@ -193,29 +193,75 @@ get_camera_command() {
   fi
 }
 
+# Check if device has video capture capability from hex value
+has_video_capture_capability() {
+  local caps_hex="$1"
+  # Remove 0x prefix if present
+  caps_hex="${caps_hex#0x}"
+  # Convert to decimal
+  local caps_dec=$((16#$caps_hex))
+  # Check if bit 0 is set (VIDEO_CAPTURE = 0x00000001)
+  (( caps_dec & 0x00000001 ))
+}
+
 # Return 0 if $1 is a real USB capture node (uvcvideo + Video Capture)
 is_usb_capture_node() {
   local dev="$1"
   [[ -c "$dev" ]] || return 1
+  
+  # Method 1: Try v4l2-ctl
   if command -v v4l2-ctl >/dev/null 2>&1; then
     local info
     info=$(v4l2-ctl --device="$dev" -D 2>/dev/null || true)
-    # Filter out bcm2835 codec/isp devices and require Video Capture capability
-    grep -qiE 'Driver name:\s*uvcvideo' <<<"$info" || return 1
-    grep -qi 'Capabilities:.*Video Capture' <<<"$info" || return 1
+    
+    # Must be uvcvideo driver
+    if ! grep -qiE 'Driver name:[[:space:]]*uvcvideo' <<<"$info"; then
+      return 1
+    fi
+    
+    # Check capabilities hex value or text
+    local caps_line
+    caps_line=$(grep -E '^[[:space:]]*Capabilities[[:space:]]*:.*0x' <<<"$info" | head -1)
+    if [[ $caps_line =~ 0x([0-9a-fA-F]+) ]]; then
+      if has_video_capture_capability "${BASH_REMATCH[1]}"; then
+        return 0
+      fi
+    fi
+    
+    # Fallback: check for explicit "Video Capture" text
+    if grep -qi 'Video Capture' <<<"$info"; then
+      return 0
+    fi
+  fi
+  
+  # Method 2: Check sysfs
+  local dev_name
+  dev_name=$(basename "$dev")
+  local uevent="/sys/class/video4linux/$dev_name/device/uevent"
+  if [[ -f "$uevent" ]] && grep -q "DRIVER=uvcvideo" "$uevent" 2>/dev/null; then
     return 0
   fi
-  # Fallback without v4l2-ctl: best-effort, skip bcm2835 nodes
-  udevadm info --query=all --name="$dev" 2>/dev/null | grep -qi 'uvc' && \
-  [[ "$dev" =~ /dev/video[0-9]+$ ]]
+  
+  return 1
 }
 
 # Pick the first proper capture node (e.g., /dev/video0 for C920)
 select_usb_capture_device() {
+  # Try /dev/video0 first (most common for USB cameras)
+  if is_usb_capture_node "/dev/video0"; then
+    echo "/dev/video0"
+    return 0
+  fi
+  
+  # Try other devices
   local dev
   for dev in /dev/video*; do
-    is_usb_capture_node "$dev" && { echo "$dev"; return 0; }
+    if is_usb_capture_node "$dev"; then
+      echo "$dev"
+      return 0
+    fi
   done
+  
   return 1
 }
 
@@ -1380,10 +1426,6 @@ start_capture() {
       ;;
   esac
 }
-
-# =============================================================================
-# MAIN ENTRY POINT
-# =============================================================================
 
 # =============================================================================
 # MAIN ENTRY POINT
