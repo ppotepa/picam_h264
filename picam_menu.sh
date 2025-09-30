@@ -29,15 +29,16 @@ add_entry "List cameras (C version)" "./picam --list-cameras"
 add_entry "Test USB camera (bash)" "./picam.sh --test-usb"
 
 # Bash Script Tests - Various Resolutions and Settings
-add_entry "Bash: 640x480 30fps auto-detect" "./picam.sh --no-menu --resolution 640x480 --fps 30 --bitrate 1000000 --duration 10"
-add_entry "Bash: 1280x720 30fps auto-detect" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 15"
-add_entry "Bash: 1920x1080 25fps high quality" "./picam.sh --no-menu --resolution 1920x1080 --fps 25 --bitrate 8000000 --duration 10"
-add_entry "Bash: 1280x720 60fps performance test" "./picam.sh --no-menu --resolution 1280x720 --fps 60 --bitrate 5000000 --duration 8"
-add_entry "Bash: 800x600 25fps low bitrate" "./picam.sh --no-menu --resolution 800x600 --fps 25 --bitrate 2000000 --duration 15"
-add_entry "Bash: 1920x1080 15fps high bitrate" "./picam.sh --no-menu --resolution 1920x1080 --fps 15 --bitrate 10000000 --duration 20"
-add_entry "Bash: 1280x720 30fps framebuffer out" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --bitrate 4000000 --fb0 --duration 10"
-add_entry "Bash: 640x480 15fps infinite test" "./picam.sh --no-menu --resolution 640x480 --fps 15 --bitrate 1500000"
-add_entry "Bash: 1600x1200 20fps auto-detect" "./picam.sh --no-menu --resolution 1600x1200 --fps 20 --bitrate 7000000 --duration 12"
+add_entry "Bash: 640x480 30fps auto-detect" "./picam.sh --no-menu --resolution 640x480 --fps 30 --duration 10"
+add_entry "Bash: 1280x720 30fps auto-detect" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --duration 15"
+add_entry "Bash: 1920x1080 25fps high quality" "./picam.sh --no-menu --resolution 1920x1080 --fps 25 --duration 10"
+add_entry "Bash: 1280x720 60fps performance test" "./picam.sh --no-menu --resolution 1280x720 --fps 60 --duration 8"
+add_entry "Bash: 800x600 25fps test" "./picam.sh --no-menu --resolution 800x600 --fps 25 --duration 15"
+add_entry "Bash: 1920x1080 15fps test" "./picam.sh --no-menu --resolution 1920x1080 --fps 15 --duration 20"
+add_entry "Bash: 1280x720 30fps KMS display" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --display kms --duration 10"
+add_entry "Bash: 640x480 15fps infinite test" "./picam.sh --no-menu --resolution 640x480 --fps 15"
+add_entry "Bash: 1600x1200 20fps test" "./picam.sh --no-menu --resolution 1600x1200 --fps 20 --duration 12"
+add_entry "Bash: USB camera /dev/video0" "./picam.sh --no-menu --source /dev/video0 --resolution 640x480 --fps 30 --duration 10"
 
 # C Implementation Tests - Various Configurations
 add_entry "C: 640x480 30fps USB /dev/video0" "./picam --source /dev/video0 --resolution 640x480 --fps 30 --bitrate 1000000 --duration 10"
@@ -53,7 +54,10 @@ add_entry "C: 1600x1200 20fps auto-detect" "./picam --source auto --resolution 1
 
 # Special Tests and Interactive Modes
 add_entry "Bash: Interactive menu wizard" "./picam.sh"
-add_entry "Bash: No overlay performance test" "./picam.sh --no-menu --no-overlay --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10"
+add_entry "Bash: Verbose mode test" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --duration 5 --verbose"
+add_entry "Bash: Quiet mode test" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --duration 5 --quiet"
+add_entry "Bash: Framebuffer display" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --duration 10 --display fb"
+add_entry "Bash: Dry run (show pipeline)" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --dry-run"
 add_entry "C: No overlay performance test" "./picam --no-overlay --source auto --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10"
 add_entry "C: Verbose logging test" "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 5 --verbose"
 add_entry "C: Quiet mode test" "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 5 --quiet"
