@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# picam_menu.sh - convenience launcher for common benchmarking commands
-# Provides a simple text menu so you can quickly run frequently used
-# command combinations without retyping them each time.
+# picam_menu.sh - interactive menu launcher for picam benchmarking
+# Provides a simple text menu to quickly run frequently used
+# camera benchmarking commands without retyping them each time.
+# 
+# Usage: ./picam_menu.sh
+# With logging: LOG_FILE=menu.log ./picam_menu.sh
 
 set -euo pipefail
 
@@ -26,16 +29,15 @@ add_entry "List cameras (C version)" "./picam --list-cameras"
 add_entry "Test USB camera (bash)" "./picam.sh --test-usb"
 
 # Bash Script Tests - Various Resolutions and Settings
-add_entry "Bash: 640x480 30fps USB /dev/video0" "./picam.sh --no-menu --source /dev/video0 --resolution 640x480 --fps 30 --bitrate 1000000 --duration 10"
-add_entry "Bash: 1280x720 30fps auto-detect" "./picam.sh --no-menu --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 15"
-add_entry "Bash: 1920x1080 25fps CSI camera" "./picam.sh --no-menu --source csi --resolution 1920x1080 --fps 25 --bitrate 8000000 --duration 10"
-add_entry "Bash: 1920x1080 30fps USB hardware encode" "./picam.sh --no-menu --source /dev/video0 --encode hardware --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 12"
-add_entry "Bash: 1280x720 60fps software encode" "./picam.sh --no-menu --source auto --encode software --resolution 1280x720 --fps 60 --bitrate 5000000 --duration 8"
-add_entry "Bash: 800x600 25fps low bitrate" "./picam.sh --no-menu --source auto --resolution 800x600 --fps 25 --bitrate 2000000 --duration 15"
-add_entry "Bash: 1920x1080 15fps high bitrate CSI" "./picam.sh --no-menu --source csi --resolution 1920x1080 --fps 15 --bitrate 10000000 --duration 20"
-add_entry "Bash: 1280x720 30fps framebuffer out" "./picam.sh --no-menu --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --fb0 --duration 10"
-add_entry "Bash: 640x480 15fps USB infinite" "./picam.sh --no-menu --source /dev/video0 --resolution 640x480 --fps 15 --bitrate 1500000"
-add_entry "Bash: 1600x1200 20fps auto-detect" "./picam.sh --no-menu --source auto --resolution 1600x1200 --fps 20 --bitrate 7000000 --duration 12"
+add_entry "Bash: 640x480 30fps auto-detect" "./picam.sh --no-menu --resolution 640x480 --fps 30 --bitrate 1000000 --duration 10"
+add_entry "Bash: 1280x720 30fps auto-detect" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 15"
+add_entry "Bash: 1920x1080 25fps high quality" "./picam.sh --no-menu --resolution 1920x1080 --fps 25 --bitrate 8000000 --duration 10"
+add_entry "Bash: 1280x720 60fps performance test" "./picam.sh --no-menu --resolution 1280x720 --fps 60 --bitrate 5000000 --duration 8"
+add_entry "Bash: 800x600 25fps low bitrate" "./picam.sh --no-menu --resolution 800x600 --fps 25 --bitrate 2000000 --duration 15"
+add_entry "Bash: 1920x1080 15fps high bitrate" "./picam.sh --no-menu --resolution 1920x1080 --fps 15 --bitrate 10000000 --duration 20"
+add_entry "Bash: 1280x720 30fps framebuffer out" "./picam.sh --no-menu --resolution 1280x720 --fps 30 --bitrate 4000000 --fb0 --duration 10"
+add_entry "Bash: 640x480 15fps infinite test" "./picam.sh --no-menu --resolution 640x480 --fps 15 --bitrate 1500000"
+add_entry "Bash: 1600x1200 20fps auto-detect" "./picam.sh --no-menu --resolution 1600x1200 --fps 20 --bitrate 7000000 --duration 12"
 
 # C Implementation Tests - Various Configurations
 add_entry "C: 640x480 30fps USB /dev/video0" "./picam --source /dev/video0 --resolution 640x480 --fps 30 --bitrate 1000000 --duration 10"
@@ -45,17 +47,22 @@ add_entry "C: 1920x1080 30fps USB hardware encode" "./picam --source /dev/video0
 add_entry "C: 1280x720 60fps software encode" "./picam --source auto --encode software --resolution 1280x720 --fps 60 --bitrate 5000000 --duration 8"
 add_entry "C: 800x600 25fps low bitrate" "./picam --source auto --resolution 800x600 --fps 25 --bitrate 2000000 --duration 15"
 add_entry "C: 1920x1080 15fps high bitrate CSI" "./picam --source csi --resolution 1920x1080 --fps 15 --bitrate 10000000 --duration 20"
-add_entry "C: 1280x720 30fps framebuffer out" "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --fb0 --duration 10"
+add_entry "C: 1280x720 30fps framebuffer out" "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --framebuffer --duration 10"
 add_entry "C: 640x480 15fps USB infinite" "./picam --source /dev/video0 --resolution 640x480 --fps 15 --bitrate 1500000"
 add_entry "C: 1600x1200 20fps auto-detect" "./picam --source auto --resolution 1600x1200 --fps 20 --bitrate 7000000 --duration 12"
 
 # Special Tests and Interactive Modes
 add_entry "Bash: Interactive menu wizard" "./picam.sh"
-add_entry "Bash: No overlay performance test" "./picam.sh --no-menu --no-overlay --source auto --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10"
+add_entry "Bash: No overlay performance test" "./picam.sh --no-menu --no-overlay --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10"
 add_entry "C: No overlay performance test" "./picam --no-overlay --source auto --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10"
+add_entry "C: Verbose logging test" "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 5 --verbose"
+add_entry "C: Quiet mode test" "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 5 --quiet"
+add_entry "Stress Test: 4K 30fps (if supported)" "./picam --source auto --resolution 3840x2160 --fps 30 --bitrate 20000000 --duration 5"
+add_entry "Quick Test: 480p 15fps low impact" "./picam --source auto --resolution 640x480 --fps 15 --bitrate 800000 --duration 5"
 
 print_menu() {
   echo
+  echo "PiCam Benchmarking Menu - $(pwd)"
   echo "Select an action:" 
   local idx=1
   for name in "${NAMES[@]}"; do
@@ -72,12 +79,24 @@ run_command() {
   echo
   echo "========================================"
   echo "[$(date '+%H:%M:%S')] Executing: $cmd"
+  echo "Working Directory: $(pwd)"
   echo "========================================"
   echo
   
   # Log to file if LOG_FILE env var is set
   if [[ -n "${LOG_FILE:-}" ]]; then
     echo "[$(date '+%H:%M:%S')] Menu executed: $cmd" >> "$LOG_FILE"
+  fi
+  
+  # Check if main executables exist before running
+  if [[ "$cmd" == *"./picam "* ]] && [[ ! -x "./picam" ]]; then
+    echo "ERROR: ./picam executable not found. Run './build.sh' first."
+    return 1
+  fi
+  
+  if [[ "$cmd" == *"./picam.sh"* ]] && [[ ! -x "./picam.sh" ]]; then
+    echo "ERROR: ./picam.sh script not found or not executable."
+    return 1
   fi
   
   # shellcheck disable=SC2086

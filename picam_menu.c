@@ -1,10 +1,11 @@
 // picam_menu.c
 // Interactive menu launcher for picam benchmarking commands
-// Provides a simple text menu so you can quickly run frequently used
-// command combinations without retyping them each time.
+// Provides a simple text menu to quickly run frequently used
+// camera benchmarking commands without retyping them each time.
 //
 // Build:   gcc -O2 -Wall -o picam_menu picam_menu.c
-// Runtime: requires ./picam and ./picam.sh executables
+// Runtime: requires ./picam and ./picam.sh executables  
+// Usage:   ./picam_menu or LOG_FILE=menu.log ./picam_menu
 // License: MIT
 
 #include <errno.h>
@@ -56,16 +57,15 @@ static void init_menu_entries(void)
     add_entry("Test USB camera (bash)", "./picam.sh --test-usb");
 
     // Bash Script Tests - Various Resolutions and Settings
-    add_entry("Bash: 640x480 30fps USB /dev/video0", "./picam.sh --no-menu --source /dev/video0 --resolution 640x480 --fps 30 --bitrate 1000000 --duration 10");
-    add_entry("Bash: 1280x720 30fps auto-detect", "./picam.sh --no-menu --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 15");
-    add_entry("Bash: 1920x1080 25fps CSI camera", "./picam.sh --no-menu --source csi --resolution 1920x1080 --fps 25 --bitrate 8000000 --duration 10");
-    add_entry("Bash: 1920x1080 30fps USB hardware encode", "./picam.sh --no-menu --source /dev/video0 --encode hardware --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 12");
-    add_entry("Bash: 1280x720 60fps software encode", "./picam.sh --no-menu --source auto --encode software --resolution 1280x720 --fps 60 --bitrate 5000000 --duration 8");
-    add_entry("Bash: 800x600 25fps low bitrate", "./picam.sh --no-menu --source auto --resolution 800x600 --fps 25 --bitrate 2000000 --duration 15");
-    add_entry("Bash: 1920x1080 15fps high bitrate CSI", "./picam.sh --no-menu --source csi --resolution 1920x1080 --fps 15 --bitrate 10000000 --duration 20");
-    add_entry("Bash: 1280x720 30fps framebuffer out", "./picam.sh --no-menu --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --fb0 --duration 10");
-    add_entry("Bash: 640x480 15fps USB infinite", "./picam.sh --no-menu --source /dev/video0 --resolution 640x480 --fps 15 --bitrate 1500000");
-    add_entry("Bash: 1600x1200 20fps auto-detect", "./picam.sh --no-menu --source auto --resolution 1600x1200 --fps 20 --bitrate 7000000 --duration 12");
+    add_entry("Bash: 640x480 30fps auto-detect", "./picam.sh --no-menu --resolution 640x480 --fps 30 --bitrate 1000000 --duration 10");
+    add_entry("Bash: 1280x720 30fps auto-detect", "./picam.sh --no-menu --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 15");
+    add_entry("Bash: 1920x1080 25fps high quality", "./picam.sh --no-menu --resolution 1920x1080 --fps 25 --bitrate 8000000 --duration 10");
+    add_entry("Bash: 1280x720 60fps performance test", "./picam.sh --no-menu --resolution 1280x720 --fps 60 --bitrate 5000000 --duration 8");
+    add_entry("Bash: 800x600 25fps low bitrate", "./picam.sh --no-menu --resolution 800x600 --fps 25 --bitrate 2000000 --duration 15");
+    add_entry("Bash: 1920x1080 15fps high bitrate", "./picam.sh --no-menu --resolution 1920x1080 --fps 15 --bitrate 10000000 --duration 20");
+    add_entry("Bash: 1280x720 30fps framebuffer out", "./picam.sh --no-menu --resolution 1280x720 --fps 30 --bitrate 4000000 --fb0 --duration 10");
+    add_entry("Bash: 640x480 15fps infinite test", "./picam.sh --no-menu --resolution 640x480 --fps 15 --bitrate 1500000");
+    add_entry("Bash: 1600x1200 20fps auto-detect", "./picam.sh --no-menu --resolution 1600x1200 --fps 20 --bitrate 7000000 --duration 12");
 
     // C Implementation Tests - Various Configurations
     add_entry("C: 640x480 30fps USB /dev/video0", "./picam --source /dev/video0 --resolution 640x480 --fps 30 --bitrate 1000000 --duration 10");
@@ -75,14 +75,18 @@ static void init_menu_entries(void)
     add_entry("C: 1280x720 60fps software encode", "./picam --source auto --encode software --resolution 1280x720 --fps 60 --bitrate 5000000 --duration 8");
     add_entry("C: 800x600 25fps low bitrate", "./picam --source auto --resolution 800x600 --fps 25 --bitrate 2000000 --duration 15");
     add_entry("C: 1920x1080 15fps high bitrate CSI", "./picam --source csi --resolution 1920x1080 --fps 15 --bitrate 10000000 --duration 20");
-    add_entry("C: 1280x720 30fps framebuffer out", "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --fb0 --duration 10");
+    add_entry("C: 1280x720 30fps framebuffer out", "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --framebuffer --duration 10");
     add_entry("C: 640x480 15fps USB infinite", "./picam --source /dev/video0 --resolution 640x480 --fps 15 --bitrate 1500000");
     add_entry("C: 1600x1200 20fps auto-detect", "./picam --source auto --resolution 1600x1200 --fps 20 --bitrate 7000000 --duration 12");
 
     // Special Tests and Interactive Modes
     add_entry("Bash: Interactive menu wizard", "./picam.sh");
-    add_entry("Bash: No overlay performance test", "./picam.sh --no-menu --no-overlay --source auto --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10");
+    add_entry("Bash: No overlay performance test", "./picam.sh --no-menu --no-overlay --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10");
     add_entry("C: No overlay performance test", "./picam --no-overlay --source auto --resolution 1920x1080 --fps 30 --bitrate 6000000 --duration 10");
+    add_entry("C: Verbose logging test", "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 5 --verbose");
+    add_entry("C: Quiet mode test", "./picam --source auto --resolution 1280x720 --fps 30 --bitrate 4000000 --duration 5 --quiet");
+    add_entry("Stress Test: 4K 30fps (if supported)", "./picam --source auto --resolution 3840x2160 --fps 30 --bitrate 20000000 --duration 5");
+    add_entry("Quick Test: 480p 15fps low impact", "./picam --source auto --resolution 640x480 --fps 15 --bitrate 800000 --duration 5");
 }
 
 // Get current timestamp as string
@@ -119,7 +123,13 @@ static void log_to_file(const char *message)
 // Print the menu
 static void print_menu(void)
 {
+    char cwd[512];
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        strcpy(cwd, "unknown");
+    }
+    
     printf("\n");
+    printf("PiCam Benchmarking Menu (C Version) - %s\n", cwd);
     printf("Select an action:\n");
 
     for (int i = 0; i < entry_count; i++)
@@ -137,18 +147,35 @@ static int run_command(const char *command)
 {
     char timestamp[32];
     char log_msg[1024];
+    char cwd[512];
+
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        strcpy(cwd, "unknown");
+    }
 
     get_timestamp(timestamp, sizeof(timestamp));
 
     printf("\n");
     printf("========================================\n");
     printf("[%s] Executing: %s\n", timestamp, command);
+    printf("Working Directory: %s\n", cwd);
     printf("========================================\n");
     printf("\n");
 
     // Log to file if LOG_FILE is set
     snprintf(log_msg, sizeof(log_msg), "Menu executed: %s", command);
     log_to_file(log_msg);
+
+    // Check if main executables exist before running
+    if (strstr(command, "./picam ") && access("./picam", X_OK) != 0) {
+        printf("ERROR: ./picam executable not found or not executable. Run './build.sh' first.\n");
+        return 127;
+    }
+    
+    if (strstr(command, "./picam.sh") && access("./picam.sh", X_OK) != 0) {
+        printf("ERROR: ./picam.sh script not found or not executable.\n");
+        return 127;
+    }
 
     // Execute the command
     int exit_code = system(command);
@@ -199,13 +226,20 @@ int main(void)
 {
     char input[256];
     char custom_command[512];
+    char cwd[512];
     int choice;
 
     // Initialize menu entries
     init_menu_entries();
 
+    printf("=====================================\n");
     printf("PiCam Benchmarking Menu (C Version)\n");
     printf("====================================\n");
+    printf("Working Directory: %s\n", getcwd(cwd, sizeof(cwd)) ? cwd : "unknown");
+    if (getenv("LOG_FILE")) {
+        printf("Logging to: %s\n", getenv("LOG_FILE"));
+    }
+    printf("\n");
 
     while (1)
     {
